@@ -1,0 +1,73 @@
+package = int128ops
+
+---
+#include <stdint.h>
+
+typedef struct { int64_t hi; int64_t lo; } int128_parts;
+
+/* Signed multiply-high: high 64 bits of (int64 * int64) treated as signed */
+int64_t int128_multiply_high_signed(int64_t a, int64_t b) {
+    __int128 result = (__int128)a * (__int128)b;
+    return (int64_t)(result >> 64);
+}
+
+/* Unsigned multiply-high: high 64 bits of (uint64 * uint64) treated as unsigned */
+int64_t int128_multiply_high_unsigned(int64_t a, int64_t b) {
+    unsigned __int128 result = (unsigned __int128)(uint64_t)a * (uint64_t)b;
+    return (int64_t)(result >> 64);
+}
+
+/* Full 128x128 wrapping multiply (low 128 bits of the 256-bit product) */
+int128_parts int128_mul(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+    unsigned __int128 a = ((unsigned __int128)(uint64_t)a_hi << 64) | (uint64_t)a_lo;
+    unsigned __int128 b = ((unsigned __int128)(uint64_t)b_hi << 64) | (uint64_t)b_lo;
+    unsigned __int128 r = a * b;
+    int128_parts res;
+    res.hi = (int64_t)(r >> 64);
+    res.lo = (int64_t)r;
+    return res;
+}
+
+/* Signed 128-bit divide. Caller must ensure b != 0 and not (a==MIN && b==-1). */
+int128_parts int128_sdiv(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+    __int128 a = ((__int128)a_hi << 64) | (uint64_t)a_lo;
+    __int128 b = ((__int128)b_hi << 64) | (uint64_t)b_lo;
+    __int128 q = a / b;
+    int128_parts res;
+    res.hi = (int64_t)(q >> 64);
+    res.lo = (int64_t)q;
+    return res;
+}
+
+/* Signed 128-bit remainder. Caller must ensure b != 0. */
+int128_parts int128_srem(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+    __int128 a = ((__int128)a_hi << 64) | (uint64_t)a_lo;
+    __int128 b = ((__int128)b_hi << 64) | (uint64_t)b_lo;
+    __int128 r = a % b;
+    int128_parts res;
+    res.hi = (int64_t)(r >> 64);
+    res.lo = (int64_t)r;
+    return res;
+}
+
+/* Unsigned 128-bit divide. Caller must ensure b != 0. */
+int128_parts uint128_div(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+    unsigned __int128 a = ((unsigned __int128)(uint64_t)a_hi << 64) | (uint64_t)a_lo;
+    unsigned __int128 b = ((unsigned __int128)(uint64_t)b_hi << 64) | (uint64_t)b_lo;
+    unsigned __int128 q = a / b;
+    int128_parts res;
+    res.hi = (int64_t)(q >> 64);
+    res.lo = (int64_t)q;
+    return res;
+}
+
+/* Unsigned 128-bit remainder. Caller must ensure b != 0. */
+int128_parts uint128_rem(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+    unsigned __int128 a = ((unsigned __int128)(uint64_t)a_hi << 64) | (uint64_t)a_lo;
+    unsigned __int128 b = ((unsigned __int128)(uint64_t)b_hi << 64) | (uint64_t)b_lo;
+    unsigned __int128 r = a % b;
+    int128_parts res;
+    res.hi = (int64_t)(r >> 64);
+    res.lo = (int64_t)r;
+    return res;
+}
