@@ -153,6 +153,28 @@ else
     fail "int128_batch_add does not use adc"
 fi
 
+# Verify: Kotlin's carry detection pattern compiles to adc (not a branch)
+cat > /tmp/long128_carry_pattern.c << 'CEOF'
+typedef long long int64_t;
+typedef unsigned long long uint64_t;
+struct pair { int64_t hi; int64_t lo; };
+struct pair kotlin_carry_add(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+    int64_t new_lo = a_lo + b_lo;
+    int64_t carry = ((uint64_t)new_lo < (uint64_t)a_lo) ? 1 : 0;
+    struct pair r;
+    r.hi = a_hi + b_hi + carry;
+    r.lo = new_lo;
+    return r;
+}
+CEOF
+gcc -O2 -c -o /tmp/long128_carry_pattern.o /tmp/long128_carry_pattern.c 2>/dev/null
+CARRY_ASM=$(objdump -d -M intel /tmp/long128_carry_pattern.o)
+if echo "$CARRY_ASM" | grep -q "adc"; then
+    pass "Kotlin carry pattern (UInt128.plus) → x86-64 add + adc (compiler recognizes carry test)"
+else
+    fail "Kotlin carry pattern does not compile to adc on x86-64"
+fi
+
 echo ""
 
 # -------------------------------------------------------------------
