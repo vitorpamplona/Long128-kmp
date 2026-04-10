@@ -25,38 +25,18 @@ class Int128(val hi: Long, val lo: Long) : Comparable<Int128> {
     }
 
     operator fun times(other: Int128): Int128 {
-        val newLo = lo * other.lo
-        val newHi = platformUnsignedMultiplyHigh(lo, other.lo) + hi * other.lo + lo * other.hi
-        return Int128(newHi, newLo)
+        val r = platformMul128(hi, lo, other.hi, other.lo)
+        return Int128(r[0], r[1])
     }
 
     operator fun div(other: Int128): Int128 {
-        if (other.hi == 0L && other.lo == 0L) throw ArithmeticException("Division by zero")
-        if (hi == Long.MIN_VALUE && lo == 0L && other.hi == -1L && other.lo == -1L) {
-            throw ArithmeticException("Int128 overflow: MIN_VALUE / -1")
-        }
-
-        val aNeg = isNegative()
-        val bNeg = other.isNegative()
-        val aAbs = if (aNeg) (-this) else this
-        val bAbs = if (bNeg) (-other) else other
-
-        val r = udivrem128(aAbs.hi, aAbs.lo, bAbs.hi, bAbs.lo)
-        val q = Int128(r[0], r[1])
-        return if (aNeg != bNeg) -q else q
+        val r = platformSDivRem128(hi, lo, other.hi, other.lo)
+        return Int128(r[0], r[1])
     }
 
     operator fun rem(other: Int128): Int128 {
-        if (other.hi == 0L && other.lo == 0L) throw ArithmeticException("Division by zero")
-
-        val aNeg = isNegative()
-        val bNeg = other.isNegative()
-        val aAbs = if (aNeg) (-this) else this
-        val bAbs = if (bNeg) (-other) else other
-
-        val r = udivrem128(aAbs.hi, aAbs.lo, bAbs.hi, bAbs.lo)
-        val rem = Int128(r[2], r[3])
-        return if (aNeg) -rem else rem
+        val r = platformSDivRem128(hi, lo, other.hi, other.lo)
+        return Int128(r[2], r[3])
     }
 
     operator fun unaryMinus(): Int128 {

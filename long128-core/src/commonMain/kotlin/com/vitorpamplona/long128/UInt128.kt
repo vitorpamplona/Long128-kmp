@@ -25,18 +25,17 @@ class UInt128(val hi: Long, val lo: Long) : Comparable<UInt128> {
     }
 
     operator fun times(other: UInt128): UInt128 {
-        val newLo = lo * other.lo
-        val newHi = platformUnsignedMultiplyHigh(lo, other.lo) + hi * other.lo + lo * other.hi
-        return UInt128(newHi, newLo)
+        val r = platformMul128(hi, lo, other.hi, other.lo)
+        return UInt128(r[0], r[1])
     }
 
     operator fun div(other: UInt128): UInt128 {
-        val r = udivrem128(hi, lo, other.hi, other.lo)
+        val r = platformUDivRem128(hi, lo, other.hi, other.lo)
         return UInt128(r[0], r[1])
     }
 
     operator fun rem(other: UInt128): UInt128 {
-        val r = udivrem128(hi, lo, other.hi, other.lo)
+        val r = platformUDivRem128(hi, lo, other.hi, other.lo)
         return UInt128(r[2], r[3])
     }
 
