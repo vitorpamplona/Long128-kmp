@@ -156,7 +156,83 @@ fi
 echo ""
 
 # -------------------------------------------------------------------
-# 3. SUMMARY
+# 3. NATIVE ARM64 INSTRUCTION VERIFICATION (cross-compile with clang)
+# -------------------------------------------------------------------
+echo "--- Native ARM64 (cross-compiling with clang --target=aarch64-linux-gnu) ---"
+
+cat > /tmp/long128_arm64.c << 'ARMEOF'
+typedef long long int64_t;
+typedef unsigned long long uint64_t;
+typedef unsigned __int128 uint128_t;
+typedef __int128 int128_t;
+typedef struct { int64_t hi; int64_t lo; } int128_parts;
+
+int64_t int128_multiply_high_unsigned(int64_t a, int64_t b) {
+    uint128_t result = (uint128_t)(uint64_t)a * (uint64_t)b;
+    return (int64_t)(result >> 64);
+}
+int128_parts int128_mul(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+    uint128_t a = ((uint128_t)(uint64_t)a_hi << 64) | (uint64_t)a_lo;
+    uint128_t b = ((uint128_t)(uint64_t)b_hi << 64) | (uint64_t)b_lo;
+    uint128_t r = a * b;
+    int128_parts res; res.hi = (int64_t)(r >> 64); res.lo = (int64_t)r; return res;
+}
+int128_parts int128_add(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+    uint128_t a = ((uint128_t)(uint64_t)a_hi << 64) | (uint64_t)a_lo;
+    uint128_t b = ((uint128_t)(uint64_t)b_hi << 64) | (uint64_t)b_lo;
+    uint128_t r = a + b;
+    int128_parts res; res.hi = (int64_t)(r >> 64); res.lo = (int64_t)r; return res;
+}
+int128_parts int128_sub(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+    uint128_t a = ((uint128_t)(uint64_t)a_hi << 64) | (uint64_t)a_lo;
+    uint128_t b = ((uint128_t)(uint64_t)b_hi << 64) | (uint64_t)b_lo;
+    uint128_t r = a - b;
+    int128_parts res; res.hi = (int64_t)(r >> 64); res.lo = (int64_t)r; return res;
+}
+ARMEOF
+
+if ! clang --target=aarch64-linux-gnu -O2 -S -o /tmp/long128_arm64.s /tmp/long128_arm64.c 2>/dev/null; then
+    echo "  SKIP: clang cannot cross-compile for aarch64"
+else
+    ARM_ASM=$(cat /tmp/long128_arm64.s)
+
+    MUL_HIGH_ARM=$(echo "$ARM_ASM" | sed -n '/^int128_multiply_high_unsigned:/,/^\.Lfunc_end/p')
+    if echo "$MUL_HIGH_ARM" | grep -q "umulh"; then
+        pass "ARM64 int128_multiply_high_unsigned → umulh (single instruction)"
+    else
+        fail "ARM64 int128_multiply_high_unsigned missing umulh"
+    fi
+
+    ADD_ARM=$(echo "$ARM_ASM" | sed -n '/^int128_add:/,/^\.Lfunc_end/p')
+    if echo "$ADD_ARM" | grep -q "adds" && echo "$ADD_ARM" | grep -q "adc"; then
+        pass "ARM64 int128_add → adds + adc (hardware carry flag)"
+    else
+        fail "ARM64 int128_add missing adds+adc"
+    fi
+
+    SUB_ARM=$(echo "$ARM_ASM" | sed -n '/^int128_sub:/,/^\.Lfunc_end/p')
+    if echo "$SUB_ARM" | grep -q "subs" && echo "$SUB_ARM" | grep -q "sbc"; then
+        pass "ARM64 int128_sub → subs + sbc (hardware borrow flag)"
+    else
+        fail "ARM64 int128_sub missing subs+sbc"
+    fi
+
+    MUL_ARM=$(echo "$ARM_ASM" | sed -n '/^int128_mul:/,/^\.Lfunc_end/p')
+    if echo "$MUL_ARM" | grep -q "umulh" && echo "$MUL_ARM" | grep -q "mul"; then
+        if echo "$MUL_ARM" | grep -q "bl "; then
+            fail "ARM64 int128_mul contains branch/call"
+        else
+            pass "ARM64 int128_mul → umulh + madd + madd + mul (4 insns, no branch)"
+        fi
+    else
+        fail "ARM64 int128_mul missing umulh/mul"
+    fi
+fi
+
+echo ""
+
+# -------------------------------------------------------------------
+# 4. SUMMARY
 # -------------------------------------------------------------------
 echo "========================================"
 echo " Results: $PASS passed, $FAIL failed"

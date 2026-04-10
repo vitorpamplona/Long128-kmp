@@ -11,7 +11,7 @@ A Kotlin Multiplatform library providing `Int128` and `UInt128` — 128-bit sign
 | Android API 31+ | `Math.multiplyHigh` → ART → `SMULH` | Kotlin | Kotlin O(128) loop | MethodHandle (D8-safe) |
 | Android API <31 | Karatsuba 4×imul | Kotlin | Kotlin O(128) loop | Pure Kotlin |
 | Native x86-64 | `mul` (1 insn) | `add`+`adc` (2 insns) | `__divti3` (optimized) | cinterop `__int128` |
-| Native ARM64 | `mul`+`umulh` (2 insns) | `adds`+`adcs` (2 insns) | `__divti3` (optimized) | cinterop `__int128` |
+| Native ARM64 | `mul`+`umulh` (2 insns) | `adds`+`adc` (2 insns) | `__divti3` (optimized) | cinterop `__int128` |
 | Native Windows | `mul` (MinGW/Clang) | `add`+`adc` | `__divti3` | cinterop `__int128` |
 
 Native targets: macOS ARM64/x64, Linux x64/ARM64, iOS ARM64/x64/SimulatorARM64, mingwX64.
@@ -77,9 +77,9 @@ All native targets use C interop with `__int128` / `unsigned __int128`. Every ar
 | Operation | C function | x86-64 instruction | ARM64 instruction |
 |-----------|-----------|--------------------|--------------------|
 | Multiply (64×64→128 high) | `int128_multiply_high_unsigned` | `mul rsi` (1 insn) | `umulh` (1 insn) |
-| Full 128×128 multiply | `int128_mul` | `imul`+`imul`+`mul`+`add`+`add` (5 insns, no loop) | `mul`+`umulh`+`madd`+`madd` (4 insns) |
-| Add | `int128_add` | `add`+`adc` (carry flag) | `adds`+`adcs` (carry flag) |
-| Subtract | `int128_sub` | `sub`+`sbb` (borrow flag) | `subs`+`sbcs` (borrow flag) |
+| Full 128×128 multiply | `int128_mul` | `imul`+`imul`+`mul`+`add`+`add` (5 insns, no loop) | `umulh`+`madd`+`madd`+`mul` (4 insns, no loop) |
+| Add | `int128_add` | `add`+`adc` (carry flag) | `adds`+`adc` (carry flag) |
+| Subtract | `int128_sub` | `sub`+`sbb` (borrow flag) | `subs`+`sbc` (borrow flag) |
 | Signed divide | `int128_sdiv` | `call __divti3` (optimized runtime) | `call __divti3` |
 | Unsigned divide | `uint128_div` | `call __udivti3` | `call __udivti3` |
 | Signed compare | `int128_scmp` | `cmp`+`sbb`+`setl` (branchless) | `cmp`+`sbc`+`csetl` |
@@ -119,8 +119,8 @@ Same two-`Long` representation as JVM. The critical challenge is accessing ARM64
 |-----------|----------------------|----------------------|---------------|----------------|-----------------|
 | Multiply 64×64→128 | `MUL` via unsignedMultiplyHigh | `UMULH` via unsignedMultiplyHigh | `mul` | `umulh` | `SMULH` + correction |
 | Full 128×128 mul | multiplyHigh + 3×`lmul` | multiplyHigh + 3×`lmul` | 5 insns (no loop) | 4 insns (no loop) | multiplyHigh + 3×`lmul` |
-| Add 128-bit | `add` + JIT carry | `adds` + JIT carry | `add`+`adc` | `adds`+`adcs` | Kotlin carry |
-| Subtract 128-bit | `sub` + JIT borrow | `subs` + JIT borrow | `sub`+`sbb` | `subs`+`sbcs` | Kotlin borrow |
+| Add 128-bit | `add` + JIT carry | `adds` + JIT carry | `add`+`adc` | `adds`+`adc` | Kotlin carry |
+| Subtract 128-bit | `sub` + JIT borrow | `subs` + JIT borrow | `sub`+`sbb` | `subs`+`sbc` | Kotlin borrow |
 | Divide 128÷128 | Kotlin O(128) loop | Kotlin O(128) loop | `__divti3` | `__divti3` | Kotlin O(128) loop |
 | Compare (signed) | Long.compareTo | Long.compareTo | `cmp`+`sbb`+`setl` | branchless | Long.compareTo |
 | Compare (unsigned) | ULong.compareTo | ULong.compareTo | `cmp`+`sbb`+`setb` | branchless | ULong.compareTo |
@@ -200,7 +200,7 @@ Every README claim is machine-verified:
 
 ```bash
 ./gradlew :long128-core:jvmTest   # 187 tests: BigInteger oracle, bytecode checks, tier detection
-./verify-instructions.sh           # 14 checks: objdump proof of mul/adc/sbb/divti3 instructions
+./verify-instructions.sh           # 18 checks: objdump x86-64 + clang cross-compile ARM64
 ```
 
 | Test suite | What it proves | Platform |
@@ -210,7 +210,7 @@ Every README claim is machine-verified:
 | `PlatformConsistencyTest` | multiply/divide identical across platforms (1360 pairs) | All targets |
 | `IntrinsicTierTest` | MethodHandle resolves, no `invokestatic` in bytecode, no boxing | JVM |
 | `BytecodeVerificationTest` | No BigInteger dependency, correct constant pool entries | JVM |
-| `verify-instructions.sh` | `mul`, `adc`, `sbb`, `__divti3` in objdump output | x86-64 host |
+| `verify-instructions.sh` | x86-64: `mul`, `adc`, `sbb`, `__divti3` via objdump; ARM64: `umulh`, `adds`+`adc`, `subs`+`sbc` via clang cross-compile | x86-64 host |
 
 ## Building
 
