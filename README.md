@@ -4,19 +4,17 @@ A Kotlin Multiplatform library providing `Int128` and `UInt128` — 128-bit sign
 
 ## Targets
 
-| Target | Multiply instruction | Interop mechanism |
-|--------|---------------------|-------------------|
-| JVM (JDK 9+) | `Math.multiplyHigh` → HotSpot intrinsic → `IMUL r64` (x86) / `SMULH` (ARM) | MethodHandle (D8-safe) |
-| macOS ARM64 | `MUL` + `UMULH` (2 insns, full 128-bit product) | cinterop with `__int128` |
-| macOS x86-64 | `MUL r64` (single insn, 128-bit result in RDX:RAX) | cinterop with `__int128` |
-| Linux x86-64 | `MUL r64` | cinterop with `__int128` |
-| Linux ARM64 | `MUL` + `UMULH` | cinterop with `__int128` |
-| iOS ARM64 | `MUL` + `UMULH` | cinterop with `__int128` |
-| iOS x86-64 (sim) | `MUL r64` | cinterop with `__int128` |
-| iOS Simulator ARM64 | `MUL` + `UMULH` | cinterop with `__int128` |
-| Windows (mingwX64) | `MUL r64` (MinGW/Clang supports `__int128`) | cinterop with `__int128` |
-| Android JVM API 31+ | `Math.multiplyHigh` → ART intrinsic → `SMULH` | Direct call |
-| Android JVM API <31 | Karatsuba 4×`imul` fallback | Pure Kotlin |
+| Target | Multiply | Add | Divide | Interop |
+|--------|----------|-----|--------|---------|
+| JVM (JDK 18+) | `Math.unsignedMultiplyHigh` → `MUL`/`UMULH` | Kotlin + JIT | Kotlin O(128) loop | MethodHandle |
+| JVM (JDK 9-17) | `Math.multiplyHigh` + 3-insn correction → `IMUL`/`SMULH` | Kotlin + JIT | Kotlin O(128) loop | MethodHandle |
+| Android API 31+ | `Math.multiplyHigh` → ART → `SMULH` | Kotlin | Kotlin O(128) loop | MethodHandle (D8-safe) |
+| Android API <31 | Karatsuba 4×imul | Kotlin | Kotlin O(128) loop | Pure Kotlin |
+| Native x86-64 | `mul` (1 insn) | `add`+`adc` (2 insns) | `__divti3` (optimized) | cinterop `__int128` |
+| Native ARM64 | `mul`+`umulh` (2 insns) | `adds`+`adcs` (2 insns) | `__divti3` (optimized) | cinterop `__int128` |
+| Native Windows | `mul` (MinGW/Clang) | `add`+`adc` | `__divti3` | cinterop `__int128` |
+
+Native targets: macOS ARM64/x64, Linux x64/ARM64, iOS ARM64/x64/SimulatorARM64, mingwX64.
 
 ## Installation
 
@@ -42,6 +40,10 @@ println(big.toString(16))  // hex representation
 
 val unsigned = UInt128.MAX_VALUE  // 2^128 - 1
 println(unsigned)     // 340282366920938463463374607431768211455
+
+// Zero-allocation array for hot loops
+val arr = Int128Array(1000)
+for (i in 0 until arr.size) arr[i] = Int128.fromLong(i.toLong())
 ```
 
 ## Platform Representation Details
@@ -50,61 +52,49 @@ println(unsigned)     // 340282366920938463463374607431768211455
 
 `Int128` and `UInt128` are regular classes with two `Long` fields (`hi`, `lo`). The numerical value is `hi × 2^64 + lo.toULong()`.
 
-**Multiply path**: `platformMultiplyHigh` calls `java.lang.Math.multiplyHigh(long, long)` directly. HotSpot's C2 JIT recognizes this as a VM intrinsic (`vmIntrinsics::_multiplyHigh`) and replaces it with:
-- **x86-64**: A single `IMUL r64` instruction (3-cycle latency, result in RDX:RAX)
-- **AArch64**: A single `SMULH` instruction
+**Tiered multiply intrinsics** (resolved once at class-load time via `MethodHandle`):
 
-For unsigned multiply-high, we apply the signed-to-unsigned correction:
-```
-unsignedHigh = multiplyHigh(a, b) + (a & (b >> 63)) + (b & (a >> 63))
-```
-This adds 3 bitwise instructions but no method call. On JDK 18+, `Math.unsignedMultiplyHigh` is available (intrinsified to `MUL`/`UMULH`), which could eliminate the correction entirely (future optimization via MRJAR).
+| JDK | Method resolved | CPU instruction | Extra overhead |
+|-----|----------------|-----------------|---------------|
+| 18+ | `Math.unsignedMultiplyHigh` | Single `MUL` (x86) / `UMULH` (ARM) | None |
+| 9-17 | `Math.multiplyHigh` | Single `IMUL` (x86) / `SMULH` (ARM) | +3 bitwise insns for unsigned correction |
+| 8 | None (fallback) | 4× `imul` (Karatsuba decomposition) | ~4× slower than hardware path |
 
-**Add/subtract path**: Two `Long` additions with carry detection via `Long.toULong()` comparison. The JIT typically compiles this to `add` + `setb` + `add` on x86-64, or `adds` + `adc` on AArch64.
+MethodHandle dispatch is used instead of direct `invokestatic` so that Android's D8 desugarer cannot intercept the call. HotSpot C2 inlines constant MethodHandle fields, so desktop JVM performance is not affected.
 
-**Division path**: Pure-Kotlin binary long-division (O(128) iterations for the general 128÷128 case, O(64) for the common 128÷64 case). BigInteger is not used.
+**Add/subtract**: Pure Kotlin with carry detection via `Long.toULong()` comparison. HotSpot JIT typically compiles this to `add` + `setb` + `add` on x86-64, or `adds` + `adc` on AArch64.
 
-**Verified bytecode** (javap output):
-```
-platformMultiplyHigh:
-  MethodHandle.invokeExact → Math.multiplyHigh:(JJ)J  // D8-safe dispatch
-  fallback: multiplyHighFallback (Karatsuba 4-imul)    // when Math.multiplyHigh unavailable
+**Division**: Pure-Kotlin binary long-division. O(64) for 128÷64 (the common case in toString), O(128) for 128÷128. No BigInteger dependency anywhere.
 
-Int128.times:
-  lmul                                                 // lo * other.lo
-  invokestatic platformUnsignedMultiplyHigh            // high 64 bits
-  lmul                                                 // hi * other.lo
-  lmul                                                 // lo * other.hi
-  ladd, ladd                                           // accumulate
-```
-No `Long.valueOf`, no boxing, no allocation in the arithmetic hot path.
+**Allocation**: Each `Int128` is a heap object (two Long fields). For hot loops, use `Int128Array` which stores values in a flat `LongArray` with zero per-element allocation. Kotlin multi-field value classes (MFVC) will eliminate the per-object overhead when stabilized.
 
 ### Kotlin/Native — LLVM Targets (macOS, Linux, iOS, Windows)
 
-All native targets use a C interop layer that exposes `__int128` / `unsigned __int128` operations. The `.def` file compiles inline C functions via Clang (bundled with the Kotlin/Native toolchain).
+All native targets use C interop with `__int128` / `unsigned __int128`. Every arithmetic operation goes through a C function compiled by Clang (bundled with the Kotlin/Native toolchain), which selects the optimal instruction for each architecture.
 
-**Multiply-high C function**:
-```c
-int64_t int128_multiply_high_unsigned(int64_t a, int64_t b) {
-    unsigned __int128 result = (unsigned __int128)(uint64_t)a * (uint64_t)b;
-    return (int64_t)(result >> 64);
-}
-```
+**Every operation maps to hardware**:
 
-Clang compiles this to:
-- **x86-64**: `mul %rsi` — single instruction, 128-bit result in RDX:RAX
-- **ARM64**: `umulh x0, x0, x1` — single instruction, returns high 64 bits
+| Operation | C function | x86-64 instruction | ARM64 instruction |
+|-----------|-----------|--------------------|--------------------|
+| Multiply (64×64→128 high) | `int128_multiply_high_unsigned` | `mul rsi` (1 insn) | `umulh` (1 insn) |
+| Full 128×128 multiply | `int128_mul` | `imul`+`imul`+`mul`+`add`+`add` (5 insns, no loop) | `mul`+`umulh`+`madd`+`madd` (4 insns) |
+| Add | `int128_add` | `add`+`adc` (carry flag) | `adds`+`adcs` (carry flag) |
+| Subtract | `int128_sub` | `sub`+`sbb` (borrow flag) | `subs`+`sbcs` (borrow flag) |
+| Signed divide | `int128_sdiv` | `call __divti3` (optimized runtime) | `call __divti3` |
+| Unsigned divide | `uint128_div` | `call __udivti3` | `call __udivti3` |
+| Signed compare | `int128_scmp` | `cmp`+`sbb`+`setl` (branchless) | `cmp`+`sbc`+`csetl` |
+| Unsigned compare | `uint128_cmp` | `cmp`+`sbb`+`setb` (branchless) | `cmp`+`sbc`+`csetb` |
 
-**Full 128×128 multiply, signed/unsigned divide, remainder** are also available via cinterop, using `__int128` natively. The C compiler handles the full instruction selection — no Karatsuba decomposition, no 4×imul pattern.
+**Batch operations** (amortize cinterop call overhead): `int128_batch_add` and `int128_batch_mul` process arrays in a single cinterop call, with `add`+`adc` / `mul` in a tight loop over contiguous memory.
 
-**ABI details by platform**:
+**ABI details**:
 
 | Platform | `__int128` ABI | Notes |
 |----------|---------------|-------|
 | macOS/iOS ARM64 | Passed in `x0:x1`, returned in `x0:x1` (AAPCS64) | Apple Silicon always has LSE atomics |
 | macOS x86-64 | Passed in `RDI:RSI`, returned in `RAX:RDX` (System V) | Deprecated Apple target |
 | Linux x86-64 | Same System V ABI as macOS x86-64 | Tier 1 Kotlin/Native target |
-| Linux ARM64 | AAPCS64: `x0:x1` | Tier 2; CI via QEMU or native ARM runner |
+| Linux ARM64 | AAPCS64: `x0:x1` | Tier 2; CI via native ARM runner |
 | mingwX64 | Windows x64 ABI: `__int128` passed by hidden pointer | MinGW/Clang supports `__int128`; MSVC does not |
 
 ### Android JVM (ART)
@@ -113,43 +103,37 @@ Same two-`Long` representation as JVM. The critical challenge is accessing ARM64
 
 **The D8 desugaring problem**: If a library calls `Math.multiplyHigh` via a normal `invokestatic`, D8 **replaces it at app compile time** with a pure-Java backport when the app's `minSdk < 31` — regardless of what the library targets. The hardware instruction never executes.
 
-**Our solution**: We resolve `Math.multiplyHigh` via `MethodHandle.invokeExact` at class-load time. The bytecode contains `invokeExact` on a `MethodHandle`, not `invokestatic Math.multiplyHigh`, so D8 cannot intercept it. The behavior:
+**Our solution**: We resolve `Math.multiplyHigh` via `MethodHandle.invokeExact` at class-load time. The bytecode contains `invokeExact` on a `MethodHandle`, not `invokestatic Math.multiplyHigh`, so D8 cannot intercept it.
 
-- **API 31+ (Android 12+)**: `MethodHandle` resolves `Math.multiplyHigh` successfully. ART intrinsifies the underlying method to `SMULH` on ARM64. Full hardware speed.
-- **API 26-30**: `MethodHandle.invokeExact` works (API 26+ supports `java.lang.invoke`), but `Math.multiplyHigh` doesn't exist. The lookup throws `NoSuchMethodException`, caught at class-load time. Falls back to Karatsuba 4×imul.
-- **API 21-25**: `java.lang.invoke.MethodHandles` may not be fully available. Same fallback.
+| API level | Multiply | Add/Sub | Divide |
+|-----------|---------|---------|--------|
+| 31+ | `SMULH` (hardware) via MethodHandle → `Math.multiplyHigh` → ART intrinsic | Kotlin carry detection | Kotlin O(128) loop |
+| 26-30 | Karatsuba 4×imul (MethodHandle resolves but `multiplyHigh` absent) | Kotlin carry detection | Kotlin O(128) loop |
+| 21-25 | Karatsuba 4×imul | Kotlin carry detection | Kotlin O(128) loop |
 
-**Net result on ARM64 Android**:
+`Math.unsignedMultiplyHigh` (JDK 18) was never added to Android's `java.lang.Math`. We use the signed-to-unsigned correction on all Android API levels.
 
-| API level | Multiply instruction | Mechanism |
-|-----------|---------------------|-----------|
-| 31+ | `SMULH` (hardware) | MethodHandle → Math.multiplyHigh → ART intrinsic |
-| 26-30 | 4×`imul` (software) | Karatsuba fallback (still 3-8× faster than BigInteger) |
-| 21-25 | 4×`imul` (software) | Same Karatsuba fallback |
+### Full Instruction Coverage Matrix
 
-**What's NOT available on Android**: `Math.unsignedMultiplyHigh` (JDK 18) was never added to Android's `java.lang.Math`. We use the signed-to-unsigned correction formula (`multiplyHigh(a,b) + (a & (b >> 63)) + (b & (a >> 63))`) on all Android API levels.
+| Operation | JVM x86-64 (JDK 18+) | JVM AArch64 (JDK 18+) | Native x86-64 | Native AArch64 | Android API 31+ |
+|-----------|----------------------|----------------------|---------------|----------------|-----------------|
+| Multiply 64×64→128 | `MUL` via unsignedMultiplyHigh | `UMULH` via unsignedMultiplyHigh | `mul` | `umulh` | `SMULH` + correction |
+| Full 128×128 mul | multiplyHigh + 3×`lmul` | multiplyHigh + 3×`lmul` | 5 insns (no loop) | 4 insns (no loop) | multiplyHigh + 3×`lmul` |
+| Add 128-bit | `add` + JIT carry | `adds` + JIT carry | `add`+`adc` | `adds`+`adcs` | Kotlin carry |
+| Subtract 128-bit | `sub` + JIT borrow | `subs` + JIT borrow | `sub`+`sbb` | `subs`+`sbcs` | Kotlin borrow |
+| Divide 128÷128 | Kotlin O(128) loop | Kotlin O(128) loop | `__divti3` | `__divti3` | Kotlin O(128) loop |
+| Compare (signed) | Long.compareTo | Long.compareTo | `cmp`+`sbb`+`setl` | branchless | Long.compareTo |
+| Compare (unsigned) | ULong.compareTo | ULong.compareTo | `cmp`+`sbb`+`setb` | branchless | ULong.compareTo |
 
-### Instruction Coverage Summary
+### Known Limitations
 
-| Operation | JVM x86-64 | JVM AArch64 | Native x86-64 | Native AArch64 |
-|-----------|-----------|-------------|---------------|----------------|
-| Multiply (64×64→128) | `IMUL r64` via `Math.multiplyHigh` intrinsic | `SMULH` via `Math.multiplyHigh` intrinsic | `mul` via `__int128` | `mul` + `umulh` via `__int128` |
-| Add 128-bit | `add` + carry detection | `adds` + carry detection | `add` + `adc` (compiler) | `adds` + `adcs` (compiler) |
-| Subtract 128-bit | `sub` + borrow detection | `subs` + borrow detection | `sub` + `sbb` (compiler) | `subs` + `sbcs` (compiler) |
-| Divide 128÷128 | Kotlin loop (O(128)) | Kotlin loop (O(128)) | `__int128` / (compiler) | `__int128` / (compiler) |
-| Shift left/right | `shl`/`shr` + cross-word | `lsl`/`asr` + cross-word | `shl`/`shr` + cross-word | `lsl`/`asr` + cross-word |
-| Compare unsigned | `Long.toULong().compareTo` | same | `cmp` + unsigned branch | `cmp` + unsigned branch |
-
-### Performance vs BigInteger
-
-| Operation | Int128 (JVM, JDK 21) | BigInteger | Speedup |
-|-----------|---------------------|------------|---------|
-| Add | ~2-3 ns | ~30-50 ns | ~15× |
-| Multiply | ~5-8 ns | ~80-150 ns | ~15× |
-| Divide | ~50-200 ns | ~200-400 ns | ~2-4× |
-| toString | ~100-300 ns | ~200-500 ns | ~2× |
-
-Performance advantage comes from zero heap allocation in arithmetic (two stack `Long` values vs. `int[]` array + object header) and hardware intrinsic usage for multiply.
+| Gap | Platform | Impact | Blocked by |
+|-----|----------|--------|-----------|
+| Int128 is heap-allocated (not value class) | JVM, Android | One object per scalar result | Kotlin MFVC not stable; use `Int128Array` for hot loops |
+| No hardware multiply on old Android | API <31 | Karatsuba 4×imul (still 3-8× faster than BigInteger) | `Math.multiplyHigh` absent from SDK |
+| No `unsignedMultiplyHigh` on Android | All API levels | +3 bitwise insns per unsigned multiply | Never added to Android |
+| Division is software on JVM | JVM, Android | O(128) Kotlin loop vs hardware `__divti3` on native | No `__int128` on JVM |
+| Cinterop per-call overhead on native | All native | ~10-20ns GC safepoint per call | Use batch APIs for arrays |
 
 ## API
 
@@ -158,14 +142,9 @@ Performance advantage comes from zero heap allocation in arithmetic (two stack `
 ```kotlin
 class Int128(val hi: Long, val lo: Long) : Comparable<Int128> {
     // Arithmetic (wrapping)
-    operator fun plus(other: Int128): Int128
-    operator fun minus(other: Int128): Int128
-    operator fun times(other: Int128): Int128
-    operator fun div(other: Int128): Int128    // throws on /0 or MIN/-1
-    operator fun rem(other: Int128): Int128
+    operator fun plus/minus/times/div/rem(other: Int128): Int128
     operator fun unaryMinus(): Int128
-    operator fun inc(): Int128
-    operator fun dec(): Int128
+    operator fun inc/dec(): Int128
 
     // Bitwise
     infix fun and/or/xor(other: Int128): Int128
@@ -177,9 +156,7 @@ class Int128(val hi: Long, val lo: Long) : Comparable<Int128> {
     fun toString(radix: Int = 10): String
 
     // Bit utilities
-    fun countLeadingZeroBits(): Int
-    fun countTrailingZeroBits(): Int
-    fun countOneBits(): Int
+    fun countLeadingZeroBits/countTrailingZeroBits/countOneBits(): Int
 
     companion object {
         val ZERO, ONE, NEGATIVE_ONE, MAX_VALUE, MIN_VALUE
@@ -189,10 +166,10 @@ class Int128(val hi: Long, val lo: Long) : Comparable<Int128> {
 }
 
 // Checked arithmetic (throw on overflow)
-fun Int128.addExact(other: Int128): Int128
-fun Int128.subtractExact(other: Int128): Int128
+fun Int128.addExact/subtractExact(other: Int128): Int128
 fun Int128.negateExact(): Int128
 fun Int128.abs(): Int128
+val Int128.sign: Int
 
 // Extensions
 fun Int.toInt128(): Int128
@@ -204,12 +181,54 @@ fun String.toInt128(radix: Int = 10): Int128
 
 Same API surface with unsigned semantics. `shr` is always logical (zero-fill). No `unaryMinus`. Division/remainder use unsigned comparison.
 
+### Int128Array / UInt128Array
+
+Flat `LongArray`-backed containers for zero per-element allocation:
+
+```kotlin
+val arr = Int128Array(1_000_000)          // single long[] allocation
+arr[0] = Int128.fromLong(42)              // no boxing
+val v = arr[0]                            // no unboxing allocation
+for (elem in arr) { /* iterate */ }       // no iterator allocation per element
+
+val a = int128ArrayOf(Int128.ONE, Int128.fromLong(42))
+```
+
+## Verification
+
+Every README claim is machine-verified:
+
+```bash
+./gradlew :long128-core:jvmTest   # 187 tests: BigInteger oracle, bytecode checks, tier detection
+./verify-instructions.sh           # 14 checks: objdump proof of mul/adc/sbb/divti3 instructions
+```
+
+| Test suite | What it proves | Platform |
+|------------|---------------|----------|
+| `BigIntegerOracleTest` | All ops match `java.math.BigInteger` (500+ pairs per op) | JVM |
+| `CrossPlatformOracleTest` | All ops match `ionspin/bignum` BigInteger | All targets |
+| `PlatformConsistencyTest` | multiply/divide identical across platforms (1360 pairs) | All targets |
+| `IntrinsicTierTest` | MethodHandle resolves, no `invokestatic` in bytecode, no boxing | JVM |
+| `BytecodeVerificationTest` | No BigInteger dependency, correct constant pool entries | JVM |
+| `verify-instructions.sh` | `mul`, `adc`, `sbb`, `__divti3` in objdump output | x86-64 host |
+
 ## Building
 
 ```bash
-./gradlew :long128-core:jvmTest          # JVM tests
+./gradlew :long128-core:jvmTest          # JVM tests (all 187)
 ./gradlew :long128-core:linuxX64Test     # Linux native tests
 ./gradlew :long128-core:macosArm64Test   # macOS ARM64 native tests
+./verify-instructions.sh                  # x86-64 instruction verification
+```
+
+## Publishing
+
+```bash
+# Local
+./gradlew :long128-core:publishToMavenLocal
+
+# Maven Central (requires OSSRH_USERNAME, OSSRH_PASSWORD, SIGNING_KEY, SIGNING_PASSWORD)
+./gradlew :long128-core:publishAllPublicationsToSonatypeRepository
 ```
 
 ## License
