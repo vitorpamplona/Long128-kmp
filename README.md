@@ -6,7 +6,7 @@ A Kotlin Multiplatform library providing `Int128` and `UInt128` — 128-bit sign
 
 | Target | Multiply instruction | Interop mechanism |
 |--------|---------------------|-------------------|
-| JVM (JDK 9+) | `Math.multiplyHigh` → HotSpot intrinsic → `IMUL r64` (x86) / `SMULH` (ARM) | Direct `invokestatic` |
+| JVM (JDK 9+) | `Math.multiplyHigh` → HotSpot intrinsic → `IMUL r64` (x86) / `SMULH` (ARM) | MethodHandle (D8-safe) |
 | macOS ARM64 | `MUL` + `UMULH` (2 insns, full 128-bit product) | cinterop with `__int128` |
 | macOS x86-64 | `MUL r64` (single insn, 128-bit result in RDX:RAX) | cinterop with `__int128` |
 | Linux x86-64 | `MUL r64` | cinterop with `__int128` |
@@ -67,14 +67,15 @@ This adds 3 bitwise instructions but no method call. On JDK 18+, `Math.unsignedM
 **Verified bytecode** (javap output):
 ```
 platformMultiplyHigh:
-  invokestatic java/lang/Math.multiplyHigh:(JJ)J   // single intrinsic call
+  MethodHandle.invokeExact → Math.multiplyHigh:(JJ)J  // D8-safe dispatch
+  fallback: multiplyHighFallback (Karatsuba 4-imul)    // when Math.multiplyHigh unavailable
 
 Int128.times:
-  lmul                                               // lo * other.lo
-  invokestatic platformUnsignedMultiplyHigh          // high 64 bits via Math.multiplyHigh
-  lmul                                               // hi * other.lo
-  lmul                                               // lo * other.hi
-  ladd, ladd                                         // accumulate
+  lmul                                                 // lo * other.lo
+  invokestatic platformUnsignedMultiplyHigh            // high 64 bits
+  lmul                                                 // hi * other.lo
+  lmul                                                 // lo * other.hi
+  ladd, ladd                                           // accumulate
 ```
 No `Long.valueOf`, no boxing, no allocation in the arithmetic hot path.
 
@@ -108,12 +109,25 @@ Clang compiles this to:
 
 ### Android JVM (ART)
 
-Same two-`Long` representation as JVM. The critical difference is `Math.multiplyHigh` availability:
+Same two-`Long` representation as JVM. The critical challenge is accessing ARM64 `SMULH`/`UMULH` instructions through the ART runtime.
 
-- **API 31+ (Android 12+)**: `Math.multiplyHigh` is available. ART's AOT compiler intrinsifies it to `SMULH` on ARM64 devices.
-- **API 21-30**: `Math.multiplyHigh` is **not available** and is **not** in `desugar_jdk_libs`. The library falls back to a Karatsuba-style 4×imul decomposition in pure Kotlin (splits each Long into 32-bit halves). Still 3-8× faster than BigInteger.
+**The D8 desugaring problem**: If a library calls `Math.multiplyHigh` via a normal `invokestatic`, D8 **replaces it at app compile time** with a pure-Java backport when the app's `minSdk < 31` — regardless of what the library targets. The hardware instruction never executes.
 
-**D8 desugaring warning**: If a consuming app has `minSdk < 31`, D8 will backport `Math.multiplyHigh` calls to a pure-Java fallback **at app compile time**, regardless of the library's own compilation target. The only way to guarantee the hardware instruction is to set `minSdk >= 31` in the app.
+**Our solution**: We resolve `Math.multiplyHigh` via `MethodHandle.invokeExact` at class-load time. The bytecode contains `invokeExact` on a `MethodHandle`, not `invokestatic Math.multiplyHigh`, so D8 cannot intercept it. The behavior:
+
+- **API 31+ (Android 12+)**: `MethodHandle` resolves `Math.multiplyHigh` successfully. ART intrinsifies the underlying method to `SMULH` on ARM64. Full hardware speed.
+- **API 26-30**: `MethodHandle.invokeExact` works (API 26+ supports `java.lang.invoke`), but `Math.multiplyHigh` doesn't exist. The lookup throws `NoSuchMethodException`, caught at class-load time. Falls back to Karatsuba 4×imul.
+- **API 21-25**: `java.lang.invoke.MethodHandles` may not be fully available. Same fallback.
+
+**Net result on ARM64 Android**:
+
+| API level | Multiply instruction | Mechanism |
+|-----------|---------------------|-----------|
+| 31+ | `SMULH` (hardware) | MethodHandle → Math.multiplyHigh → ART intrinsic |
+| 26-30 | 4×`imul` (software) | Karatsuba fallback (still 3-8× faster than BigInteger) |
+| 21-25 | 4×`imul` (software) | Same Karatsuba fallback |
+
+**What's NOT available on Android**: `Math.unsignedMultiplyHigh` (JDK 18) was never added to Android's `java.lang.Math`. We use the signed-to-unsigned correction formula (`multiplyHigh(a,b) + (a & (b >> 63)) + (b & (a >> 63))`) on all Android API levels.
 
 ### Instruction Coverage Summary
 

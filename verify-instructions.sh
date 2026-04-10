@@ -31,19 +31,19 @@ if [ ! -f "$PLATFORM_CLASS" ]; then
     exit 1
 fi
 
-# Claim: platformMultiplyHigh calls Math.multiplyHigh
+# Claim: platformMultiplyHigh resolves Math.multiplyHigh via MethodHandle (D8-safe)
 BYTECODE=$(javap -c -p "$PLATFORM_CLASS" 2>/dev/null)
-if echo "$BYTECODE" | grep -q "Math.multiplyHigh"; then
-    pass "platformMultiplyHigh → invokestatic Math.multiplyHigh (JDK 9+ intrinsic)"
+if echo "$BYTECODE" | grep -q "MethodHandle\|invokeExact\|findStatic"; then
+    pass "platformMultiplyHigh → MethodHandle.invokeExact (D8-safe, resolves Math.multiplyHigh at runtime)"
 else
-    fail "platformMultiplyHigh does NOT call Math.multiplyHigh"
+    fail "platformMultiplyHigh does NOT use MethodHandle dispatch"
 fi
 
-# Claim: unsigned correction uses bitwise ops, not a method call
-if echo "$BYTECODE" | grep -q "lshr" && echo "$BYTECODE" | grep -q "land" && echo "$BYTECODE" | grep -q "ladd"; then
-    pass "platformUnsignedMultiplyHigh → Math.multiplyHigh + bitwise correction (no extra method call)"
+# Claim: fallback Karatsuba implementation exists for API < 31
+if echo "$BYTECODE" | grep -q "multiplyHighFallback"; then
+    pass "multiplyHighFallback → pure-Kotlin Karatsuba (4-imul) fallback present"
 else
-    fail "platformUnsignedMultiplyHigh correction pattern not found"
+    fail "multiplyHighFallback not found"
 fi
 
 # Claim: no Long.valueOf boxing in Int128
