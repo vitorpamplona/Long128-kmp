@@ -4,27 +4,37 @@ import java.lang.invoke.MethodHandles
 import java.lang.invoke.MethodType
 
 /**
- * JVM platform math.
+ * JVM platform math with tiered optimization.
  *
- * Uses MethodHandle to resolve Math.multiplyHigh at runtime so D8 on Android
- * cannot desugar it. On HotSpot (desktop JVM), C2 inlines constant MethodHandles,
- * so the performance is near-identical to a direct invokestatic.
+ * Resolves Math.multiplyHigh (JDK 9+) and Math.unsignedMultiplyHigh (JDK 18+)
+ * via MethodHandle at class-load time. This:
  *
- * On API < 31 (Android) or JDK < 9, falls back to the Karatsuba 4-imul
- * decomposition.
+ * 1. Avoids D8 desugaring on Android (D8 scans for invokestatic, not invokeExact)
+ * 2. Allows HotSpot C2 to inline the constant MethodHandle → same perf as direct call
+ * 3. Automatically picks the best available intrinsic at runtime
+ *
+ * Tier priority:
+ * - JDK 18+ / Android API 35+(?): Math.unsignedMultiplyHigh → single MUL/UMULH
+ * - JDK 9+  / Android API 31+:    Math.multiplyHigh + 3-insn correction
+ * - JDK 8   / Android API <31:    Karatsuba 4-imul fallback
  */
 
-private val MULTIPLY_HIGH: java.lang.invoke.MethodHandle? = try {
-    MethodHandles.lookup().findStatic(
-        Math::class.java,
-        "multiplyHigh",
-        MethodType.methodType(Long::class.java, Long::class.java, Long::class.java)
-    )
-} catch (_: Throwable) {
-    null
-}
+private val JJ_J = MethodType.methodType(Long::class.java, Long::class.java, Long::class.java)
 
-/** Pure-Kotlin signed multiply-high (Hacker's Delight / JDK 9 algorithm). */
+/** Math.multiplyHigh(long, long) → signed high 64 bits. JDK 9+. */
+private val MH_MULTIPLY_HIGH: java.lang.invoke.MethodHandle? = try {
+    MethodHandles.lookup().findStatic(Math::class.java, "multiplyHigh", JJ_J)
+} catch (_: Throwable) { null }
+
+/** Math.unsignedMultiplyHigh(long, long) → unsigned high 64 bits. JDK 18+. */
+private val MH_UNSIGNED_MULTIPLY_HIGH: java.lang.invoke.MethodHandle? = try {
+    MethodHandles.lookup().findStatic(Math::class.java, "unsignedMultiplyHigh", JJ_J)
+} catch (_: Throwable) { null }
+
+/**
+ * Pure-Kotlin signed multiply-high (Hacker's Delight / JDK 9 algorithm).
+ * Used when Math.multiplyHigh is unavailable (JDK 8, Android API <31).
+ */
 internal fun multiplyHighFallback(x: Long, y: Long): Long {
     val x1 = x shr 32
     val x0 = x and 0xFFFFFFFFL
@@ -38,8 +48,8 @@ internal fun multiplyHighFallback(x: Long, y: Long): Long {
     return z2 + (t shr 32) + (z1 shr 32)
 }
 
-private fun multiplyHigh(x: Long, y: Long): Long {
-    val mh = MULTIPLY_HIGH
+private fun signedMultiplyHigh(x: Long, y: Long): Long {
+    val mh = MH_MULTIPLY_HIGH
     return if (mh != null) {
         mh.invokeExact(x, y) as Long
     } else {
@@ -47,12 +57,24 @@ private fun multiplyHigh(x: Long, y: Long): Long {
     }
 }
 
+/**
+ * Unsigned multiply-high.
+ *
+ * Tier 1 (JDK 18+): Math.unsignedMultiplyHigh → single MUL (x86) / UMULH (ARM64)
+ * Tier 2 (JDK 9+):  Math.multiplyHigh + signed-to-unsigned correction (3 extra insns)
+ * Tier 3 (JDK 8):   Karatsuba fallback + correction
+ */
 internal actual fun platformUnsignedMultiplyHigh(x: Long, y: Long): Long {
-    val signed = multiplyHigh(x, y)
+    val mh = MH_UNSIGNED_MULTIPLY_HIGH
+    if (mh != null) {
+        return mh.invokeExact(x, y) as Long
+    }
+    // Fall back to signed + correction
+    val signed = signedMultiplyHigh(x, y)
     return signed + (x and (y shr 63)) + (y and (x shr 63))
 }
 
-/** JVM: 128×128 multiply in pure Kotlin (no hardware shortcut beyond multiplyHigh). */
+/** JVM: 128×128 multiply using unsignedMultiplyHigh for the cross-word product. */
 internal actual fun platformMul128(aHi: Long, aLo: Long, bHi: Long, bLo: Long): LongArray {
     val lo = aLo * bLo
     val hi = platformUnsignedMultiplyHigh(aLo, bLo) + aHi * bLo + aLo * bHi
@@ -71,26 +93,24 @@ internal actual fun platformSDivRem128(nHi: Long, nLo: Long, dHi: Long, dLo: Lon
 
     val aNeg = nHi < 0
     val bNeg = dHi < 0
-    val aAbsHi = if (aNeg) { val lo = nLo.inv() + 1L; nHi.inv() + (if (nLo == 0L) 1L else 0L) } else nHi
     val aAbsLo = if (aNeg) nLo.inv() + 1L else nLo
-    val bAbsHi = if (bNeg) { val lo = dLo.inv() + 1L; dHi.inv() + (if (dLo == 0L) 1L else 0L) } else dHi
+    val aAbsHi = if (aNeg) nHi.inv() + (if (nLo == 0L) 1L else 0L) else nHi
     val bAbsLo = if (bNeg) dLo.inv() + 1L else dLo
+    val bAbsHi = if (bNeg) dHi.inv() + (if (dLo == 0L) 1L else 0L) else dHi
 
     val r = udivrem128(aAbsHi, aAbsLo, bAbsHi, bAbsLo)
     var qHi = r[0]; var qLo = r[1]
     var rHi = r[2]; var rLo = r[3]
 
     if (aNeg != bNeg) {
-        // Negate quotient
-        val newLo = qLo.inv() + 1L
+        val newQLo = qLo.inv() + 1L
         qHi = qHi.inv() + (if (qLo == 0L) 1L else 0L)
-        qLo = newLo
+        qLo = newQLo
     }
     if (aNeg) {
-        // Negate remainder
-        val newLo = rLo.inv() + 1L
+        val newRLo = rLo.inv() + 1L
         rHi = rHi.inv() + (if (rLo == 0L) 1L else 0L)
-        rLo = newLo
+        rLo = newRLo
     }
 
     return longArrayOf(qHi, qLo, rHi, rLo)
