@@ -129,6 +129,30 @@ else
     fail "int128_sdiv does not call runtime helper (unexpected)"
 fi
 
+# Claim: int128_add uses add + adc (carry flag, not branch)
+ADD_FUNC=$(echo "$DISASM" | sed -n '/<int128_add>:/,/ret$/p')
+if echo "$ADD_FUNC" | grep -q "adc"; then
+    pass "int128_add → add + adc (hardware carry flag, no branch)"
+else
+    fail "int128_add does not use adc instruction"
+fi
+
+# Claim: int128_sub uses sub + sbb (borrow flag, not branch)
+SUB_FUNC=$(echo "$DISASM" | sed -n '/<int128_sub>:/,/ret$/p')
+if echo "$SUB_FUNC" | grep -q "sbb"; then
+    pass "int128_sub → sub + sbb (hardware borrow flag, no branch)"
+else
+    fail "int128_sub does not use sbb instruction"
+fi
+
+# Claim: batch_add uses add + adc in a tight loop
+BATCH_ADD=$(echo "$DISASM" | sed -n '/<int128_batch_add>:/,/ret$/p')
+if echo "$BATCH_ADD" | grep -q "adc"; then
+    pass "int128_batch_add → add + adc in loop (amortized cinterop overhead)"
+else
+    fail "int128_batch_add does not use adc"
+fi
+
 echo ""
 
 # -------------------------------------------------------------------

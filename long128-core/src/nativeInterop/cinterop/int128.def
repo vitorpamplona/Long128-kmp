@@ -71,3 +71,76 @@ int128_parts uint128_rem(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo)
     res.lo = (int64_t)r;
     return res;
 }
+
+/* ---------- Add / Sub / Compare (compiles to add+adc, sub+sbb, cmp) ---------- */
+
+int128_parts int128_add(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+    unsigned __int128 a = ((unsigned __int128)(uint64_t)a_hi << 64) | (uint64_t)a_lo;
+    unsigned __int128 b = ((unsigned __int128)(uint64_t)b_hi << 64) | (uint64_t)b_lo;
+    unsigned __int128 r = a + b;
+    int128_parts res;
+    res.hi = (int64_t)(r >> 64);
+    res.lo = (int64_t)r;
+    return res;
+}
+
+int128_parts int128_sub(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+    unsigned __int128 a = ((unsigned __int128)(uint64_t)a_hi << 64) | (uint64_t)a_lo;
+    unsigned __int128 b = ((unsigned __int128)(uint64_t)b_hi << 64) | (uint64_t)b_lo;
+    unsigned __int128 r = a - b;
+    int128_parts res;
+    res.hi = (int64_t)(r >> 64);
+    res.lo = (int64_t)r;
+    return res;
+}
+
+int128_parts int128_neg(int64_t a_hi, int64_t a_lo) {
+    unsigned __int128 a = ((unsigned __int128)(uint64_t)a_hi << 64) | (uint64_t)a_lo;
+    unsigned __int128 r = -a;
+    int128_parts res;
+    res.hi = (int64_t)(r >> 64);
+    res.lo = (int64_t)r;
+    return res;
+}
+
+/* Signed comparison: returns -1, 0, or 1 */
+int32_t int128_scmp(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+    __int128 a = ((__int128)a_hi << 64) | (uint64_t)a_lo;
+    __int128 b = ((__int128)b_hi << 64) | (uint64_t)b_lo;
+    return (a > b) - (a < b);
+}
+
+/* Unsigned comparison: returns -1, 0, or 1 */
+int32_t uint128_cmp(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+    unsigned __int128 a = ((unsigned __int128)(uint64_t)a_hi << 64) | (uint64_t)a_lo;
+    unsigned __int128 b = ((unsigned __int128)(uint64_t)b_hi << 64) | (uint64_t)b_lo;
+    return (a > b) - (a < b);
+}
+
+/* ---------- Batch operations (amortize cinterop call overhead) ---------- */
+
+/**
+ * Add arrays: out[i] = a[i] + b[i]. Each element is (hi, lo) stored contiguously.
+ * @param data  interleaved array: [a0_hi, a0_lo, b0_hi, b0_lo, a1_hi, a1_lo, b1_hi, b1_lo, ...]
+ * @param out   output array: [r0_hi, r0_lo, r1_hi, r1_lo, ...]
+ * @param count number of pairs
+ */
+void int128_batch_add(const int64_t* a, const int64_t* b, int64_t* out, int32_t count) {
+    for (int32_t i = 0; i < count; i++) {
+        unsigned __int128 va = ((unsigned __int128)(uint64_t)a[i*2] << 64) | (uint64_t)a[i*2+1];
+        unsigned __int128 vb = ((unsigned __int128)(uint64_t)b[i*2] << 64) | (uint64_t)b[i*2+1];
+        unsigned __int128 r = va + vb;
+        out[i*2]   = (int64_t)(r >> 64);
+        out[i*2+1] = (int64_t)r;
+    }
+}
+
+void int128_batch_mul(const int64_t* a, const int64_t* b, int64_t* out, int32_t count) {
+    for (int32_t i = 0; i < count; i++) {
+        unsigned __int128 va = ((unsigned __int128)(uint64_t)a[i*2] << 64) | (uint64_t)a[i*2+1];
+        unsigned __int128 vb = ((unsigned __int128)(uint64_t)b[i*2] << 64) | (uint64_t)b[i*2+1];
+        unsigned __int128 r = va * vb;
+        out[i*2]   = (int64_t)(r >> 64);
+        out[i*2+1] = (int64_t)r;
+    }
+}
