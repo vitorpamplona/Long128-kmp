@@ -46,13 +46,42 @@ val arr = Int128Array(1000)
 for (i in 0 until arr.size) arr[i] = Int128.fromLong(i.toLong())
 ```
 
+## Project Structure
+
+```
+long128-core/src/
+├── commonMain/kotlin/com/vitorpamplona/long128/
+│   ├── Int128.kt                  # Signed 128-bit integer
+│   ├── UInt128.kt                 # Unsigned 128-bit integer
+│   ├── Int128Array.kt             # Flat arrays (zero per-element allocation)
+│   └── internal/
+│       ├── PlatformIntrinsics.kt  # expect funs: unsignedMultiplyHigh, multiply128,
+│       │                          #   signedDivide128, unsignedDivide128
+│       └── SoftwareArithmetic.kt  # Pure-Kotlin fallbacks: division, comparison,
+│                                  #   toString, parsing (used on JVM, reference for native)
+├── jvmMain/kotlin/.../internal/
+│   └── PlatformIntrinsics.jvm.kt  # actual: MethodHandle → Math.multiplyHigh (D8-safe),
+│                                  #   tiered JDK 8/9/18 intrinsic selection
+├── nativeMain/kotlin/.../internal/
+│   └── PlatformIntrinsics.native.kt  # actual: cinterop → __int128 (mul, div, umulh)
+└── nativeInterop/cinterop/
+    └── int128.def                 # C functions using __int128, compiled by Clang to
+                                   #   mul/umulh/add+adc/sub+sbb/__divti3
+```
+
+**Why this structure**: The `expect`/`actual` split in `PlatformIntrinsics` lets each platform
+provide its best implementation for the expensive operations (multiply, divide) while sharing
+the cheap ones (add, subtract, bitwise, shifts) in `commonMain`. The pure-Kotlin algorithms in
+`SoftwareArithmetic` serve as both the JVM implementation (where `__int128` is unavailable) and
+a correctness reference for testing the native cinterop path.
+
 ## Platform Representation Details
 
 ### JVM (HotSpot / OpenJ9)
 
 `Int128` and `UInt128` are regular classes with two `Long` fields (`hi`, `lo`). The numerical value is `hi × 2^64 + lo.toULong()`.
 
-**Tiered multiply intrinsics** (resolved once at class-load time via `MethodHandle`):
+**Tiered multiply intrinsics** (resolved once at class-load time via `MethodHandle` in `PlatformIntrinsics.jvm.kt`):
 
 | JDK | Method resolved | CPU instruction | Extra overhead |
 |-----|----------------|-----------------|---------------|
@@ -64,28 +93,35 @@ MethodHandle dispatch is used instead of direct `invokestatic` so that Android's
 
 **Add/subtract**: Pure Kotlin with carry detection via `Long.toULong()` comparison. HotSpot JIT typically compiles this to `add` + `setb` + `add` on x86-64, or `adds` + `adc` on AArch64.
 
-**Division**: Pure-Kotlin binary long-division. O(64) for 128÷64 (the common case in toString), O(128) for 128÷128. No BigInteger dependency anywhere.
+**Division**: Pure-Kotlin binary long-division in `SoftwareArithmetic.kt`. O(64) for 128÷64 (the common case in toString), O(128) for 128÷128. No BigInteger dependency anywhere.
 
 **Allocation**: Each `Int128` is a heap object (two Long fields). For hot loops, use `Int128Array` which stores values in a flat `LongArray` with zero per-element allocation. Kotlin multi-field value classes (MFVC) will eliminate the per-object overhead when stabilized.
 
 ### Kotlin/Native — LLVM Targets (macOS, Linux, iOS, Windows)
 
-All native targets use C interop with `__int128` / `unsigned __int128`. Every arithmetic operation goes through a C function compiled by Clang (bundled with the Kotlin/Native toolchain), which selects the optimal instruction for each architecture.
+Multiply and divide delegate to C functions (via `PlatformIntrinsics.native.kt`) that use `__int128` / `unsigned __int128`. Clang (bundled with the Kotlin/Native toolchain) compiles these to the optimal hardware instruction for each architecture.
 
-**Every operation maps to hardware**:
+Add and subtract stay in pure Kotlin because cinterop call overhead (~10-20ns for GC safepoint) exceeds the operation cost (~2ns). The Kotlin carry detection pattern `(result.toULong() < operand.toULong())` is recognized by both GCC and Clang as a carry-flag test and compiles to `add`+`adc` / `adds`+`adc` — the same instructions as the `__int128` C version (verified in `verify-instructions.sh`).
 
-| Operation | C function | x86-64 instruction | ARM64 instruction |
-|-----------|-----------|--------------------|--------------------|
+**Operations routed through cinterop** (expensive, benefit from hardware):
+
+| Operation | C function | x86-64 | ARM64 |
+|-----------|-----------|--------|-------|
 | Multiply (64×64→128 high) | `int128_multiply_high_unsigned` | `mul rsi` (1 insn) | `umulh` (1 insn) |
-| Full 128×128 multiply | `int128_mul` | `imul`+`imul`+`mul`+`add`+`add` (5 insns, no loop) | `umulh`+`madd`+`madd`+`mul` (4 insns, no loop) |
-| Add | `int128_add` | `add`+`adc` (carry flag) | `adds`+`adc` (carry flag) |
-| Subtract | `int128_sub` | `sub`+`sbb` (borrow flag) | `subs`+`sbc` (borrow flag) |
-| Signed divide | `int128_sdiv` | `call __divti3` (optimized runtime) | `call __divti3` |
+| Full 128×128 multiply | `int128_mul` | `imul`+`imul`+`mul`+`add`+`add` (5 insns) | `umulh`+`madd`+`madd`+`mul` (4 insns) |
+| Signed divide | `int128_sdiv` | `call __divti3` | `call __divti3` |
 | Unsigned divide | `uint128_div` | `call __udivti3` | `call __udivti3` |
-| Signed compare | `int128_scmp` | `cmp`+`sbb`+`setl` (branchless) | `cmp`+`sbc`+`csetl` |
-| Unsigned compare | `uint128_cmp` | `cmp`+`sbb`+`setb` (branchless) | `cmp`+`sbc`+`csetb` |
 
-**Batch operations** (amortize cinterop call overhead): `int128_batch_add` and `int128_batch_mul` process arrays in a single cinterop call, with `add`+`adc` / `mul` in a tight loop over contiguous memory.
+**Operations staying in pure Kotlin** (cheap, cinterop overhead would be a net loss):
+
+| Operation | Kotlin pattern | x86-64 output | ARM64 output |
+|-----------|---------------|--------------|--------------|
+| Add | `lo + other.lo` + carry detect | `add`+`adc` | `adds`+`adc` |
+| Subtract | `lo - other.lo` + borrow detect | `sub`+`sbb` | `subs`+`sbc` |
+| Compare | `Long.compareTo` / `ULong.compareTo` | `cmp` | `cmp` |
+| Bitwise & shifts | Direct Long ops | 1-2 insns | 1-2 insns |
+
+**Batch operations** (amortize cinterop call overhead for `Int128Array`): `int128_batch_add` and `int128_batch_mul` in `int128.def` process N elements in a single cinterop call with `add`+`adc` / `mul` in a tight loop.
 
 **ABI details**:
 
@@ -200,7 +236,7 @@ Every README claim is machine-verified:
 
 ```bash
 ./gradlew :long128-core:jvmTest   # 187 tests: BigInteger oracle, bytecode checks, tier detection
-./verify-instructions.sh           # 18 checks: objdump x86-64 + clang cross-compile ARM64
+./verify-instructions.sh           # 19 checks: objdump x86-64 + clang cross-compile ARM64
 ```
 
 | Test suite | What it proves | Platform |
