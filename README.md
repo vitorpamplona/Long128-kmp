@@ -171,6 +171,72 @@ Same two-`Long` representation as JVM. The critical challenge is accessing ARM64
 | Division is software on JVM | JVM, Android | O(128) Kotlin loop vs hardware `__divti3` on native | No `__int128` on JVM |
 | Cinterop per-call overhead on native | All native | ~10-20ns GC safepoint per call | Use batch APIs for arrays |
 
+## Performance
+
+Benchmarked on x86-64 Linux, JDK 21. C `__int128` (gcc -O2) is the performance floor.
+
+Run: `./benchmark/run-benchmarks.sh` or `./gradlew -q :benchmark:jvmRun`
+
+### How to read this
+
+Three tiers are measured to separate what matters:
+- **C `__int128`**: The hardware floor. Pure register arithmetic, no language overhead.
+- **Kotlin scalar**: Raw Long pairs, no `Int128` objects — simulates what Kotlin multi-field value classes (MFVC) will give us. Measures the cost of the instruction selection strategy (MethodHandle dispatch, carry detection pattern) without allocation.
+- **Kotlin `Int128`**: The real library API. Measures instruction cost **plus** heap allocation per result. This is what users experience today.
+
+### Arithmetic — instruction cost only (scalar Longs vs C)
+
+| Operation | C `__int128` | Kotlin scalar | Ratio | What the gap is |
+|-----------|-------------|---------------|-------|----------------|
+| add | <0.3 ns | 0.58 ns | ~2x | Carry detection pattern vs hardware `adc`. Both compile to `add`+`adc`, but JVM loop overhead differs. |
+| multiply | 2.82 ns | 3.52 ns | **1.2x** | `Math.multiplyHigh` intrinsic nearly matches C `mul`. |
+| multiply-high | 0.99 ns | 2.70 ns | 2.7x | MethodHandle `invokeExact` dispatch. Direct `invokestatic` would be ~1.0x but breaks Android D8. |
+| shift | 2.44 ns | 4.06 ns | 1.7x | Cross-word shift is 4 Long ops vs C's 2-insn `shld`/`shrd`. |
+| compare | 1.03 ns | 2.04 ns | 2.0x | Two Long comparisons + branch vs C's `cmp`+`sbb`. |
+
+**Takeaway**: The raw arithmetic is within **1.2-2.7x** of C. The MethodHandle dispatch for multiply-high (2.7x) is the largest gap and exists solely to work around Android D8 desugaring. Multiply itself is 1.2x — essentially hardware speed.
+
+### Allocation overhead — Int128 objects vs scalar
+
+| Operation | Kotlin scalar | Kotlin `Int128` | Overhead | Why |
+|-----------|--------------|-----------------|----------|-----|
+| add | 0.58 ns | 7.53 ns | 13x | Each `+` allocates a new `Int128` object (~7ns alloc) |
+| multiply | 3.52 ns | 8.34 ns | 2.4x | One alloc per `*` (mul cost dominates, alloc is smaller fraction) |
+| shift | 4.06 ns | 54.66 ns | 13x | `(a shl 7) xor (a ushr 3)` creates 3 intermediate objects |
+| compare | 2.04 ns | 22.99 ns | 11x | Array `get` creates temporary `Int128` per comparison |
+| mixed (mul-accum) | — | 11.87 ns | — | Realistic: one mul + one add + occasional mod |
+
+**Takeaway**: Object allocation is the dominant cost, not arithmetic. The multiply instruction is 3.52ns; wrapping it in an `Int128` object adds ~5ns. For add, the instruction is 0.58ns but the object costs ~7ns. **Kotlin MFVC will eliminate this gap entirely** — `Int128` would become two register-passed Longs with zero allocation.
+
+### Division — the largest C vs Kotlin gap
+
+| Operation | C `__int128` | Kotlin `Int128` | Ratio | Why |
+|-----------|-------------|-----------------|-------|-----|
+| div by small (÷7) | 15.62 ns | 780 ns | 50x | C uses optimized `__divti3` runtime; Kotlin uses O(128) bit-at-a-time loop |
+| div by large (÷3×2^64+7) | 4.88 ns | 48.94 ns | 10x | Kotlin loop is shorter when quotient is small |
+
+Division is the weakest operation on JVM. The pure-Kotlin `SoftwareArithmetic.unsignedDivRem` is an O(128) binary long-division loop — correct but slow. On native targets, this is bypassed entirely via cinterop to `__divti3`.
+
+### Int128Array — avoiding allocation in bulk
+
+| Operation | `Int128` (per-op alloc) | `Int128Array` (flat backing) | Improvement |
+|-----------|------------------------|------------------------------|-------------|
+| add | 7.53 ns | 11.39 ns | Similar (array access overhead offsets alloc savings) |
+| multiply | 8.34 ns | 11.10 ns | Similar |
+
+`Int128Array` stores values in a contiguous `LongArray` — no per-element object headers. The `get`/`set` still create temporary `Int128` objects, so the per-operation numbers are similar. The real benefit is for **storage**: an `Int128Array(1_000_000)` is one `long[2_000_000]` allocation (16 MB) vs. one million `Int128` objects (32 MB + GC pressure). The cinterop batch functions (`int128_batch_add`, `int128_batch_mul`) can process the flat array in a single native call on Kotlin/Native targets.
+
+### What Kotlin MFVC will change
+
+When Kotlin multi-field value classes ship, `Int128(hi, lo)` will be erased to two `Long` parameters at call sites — no heap allocation. Expected impact:
+
+| Operation | Current `Int128` | Expected with MFVC | C `__int128` |
+|-----------|-----------------|-------------------|-------------|
+| add | 7.53 ns | ~0.6 ns | <0.3 ns |
+| multiply | 8.34 ns | ~3.5 ns | 2.82 ns |
+| shift | 54.66 ns | ~4 ns | 2.44 ns |
+| compare | 22.99 ns | ~2 ns | 1.03 ns |
+
 ## API
 
 ### Int128
