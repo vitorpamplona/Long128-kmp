@@ -300,4 +300,173 @@ class Int128Test {
     @Test fun stringToInt128() {
         assertEquals(Int128.fromLong(42), "42".toInt128())
     }
+
+    // ── Conversions (narrowing) ─────────────────────────────────────
+
+    @Test fun toByteNarrows() {
+        assertEquals(0x7F.toByte(), Int128.fromLong(0x7F).toByte())
+        assertEquals((-1).toByte(), Int128.NEGATIVE_ONE.toByte())
+        // Truncates: only low 8 bits
+        assertEquals(0x10.toByte(), Int128.fromLong(0x110).toByte())
+    }
+
+    @Test fun toShortNarrows() {
+        assertEquals(0x7FFF.toShort(), Int128.fromLong(0x7FFF).toShort())
+        assertEquals((-1).toShort(), Int128.NEGATIVE_ONE.toShort())
+    }
+
+    @Test fun toIntNarrowsLargeValues() {
+        assertEquals(0, Int128(1L, 0L).toInt())  // 2^64 truncates to 0
+        assertEquals(-1, Int128.NEGATIVE_ONE.toInt())
+    }
+
+    @Test fun toDoubleSmallValues() {
+        assertEquals(0.0, Int128.ZERO.toDouble())
+        assertEquals(42.0, Int128.fromLong(42).toDouble())
+        assertEquals(-42.0, Int128.fromLong(-42).toDouble())
+        assertEquals(Long.MAX_VALUE.toDouble(), Int128.fromLong(Long.MAX_VALUE).toDouble())
+        assertEquals(Long.MIN_VALUE.toDouble(), Int128.fromLong(Long.MIN_VALUE).toDouble())
+    }
+
+    @Test fun toDoubleLargeValues() {
+        // 2^64 = 18446744073709551616.0
+        assertEquals(18446744073709551616.0, Int128(1L, 0L).toDouble(), 1.0)
+        // Negative large
+        val neg = -Int128(1L, 0L)
+        assertEquals(-18446744073709551616.0, neg.toDouble(), 1.0)
+    }
+
+    @Test fun toFloatSmall() {
+        assertEquals(42.0f, Int128.fromLong(42).toFloat())
+    }
+
+    // ── inc / dec ───────────────────────────────────────────────────
+
+    @Test fun incFromZero() {
+        var v = Int128.ZERO
+        v++
+        assertEquals(Int128.ONE, v)
+    }
+
+    @Test fun decFromOne() {
+        var v = Int128.ONE
+        v--
+        assertEquals(Int128.ZERO, v)
+    }
+
+    @Test fun incMaxValueWraps() {
+        var v = Int128.MAX_VALUE
+        v++
+        assertEquals(Int128.MIN_VALUE, v)
+    }
+
+    @Test fun decMinValueWraps() {
+        var v = Int128.MIN_VALUE
+        v--
+        assertEquals(Int128.MAX_VALUE, v)
+    }
+
+    // ── unaryPlus / isNegative ──────────────────────────────────────
+
+    @Test fun unaryPlusReturnsSelf() {
+        val v = Int128(123L, 456L)
+        assertEquals(v, +v)
+    }
+
+    @Test fun isNegativeCorrect() {
+        assertTrue(Int128.MIN_VALUE.isNegative())
+        assertTrue(Int128.NEGATIVE_ONE.isNegative())
+        assertFalse(Int128.ZERO.isNegative())
+        assertFalse(Int128.ONE.isNegative())
+        assertFalse(Int128.MAX_VALUE.isNegative())
+    }
+
+    // ── countTrailingZeroBits ───────────────────────────────────────
+
+    @Test fun ctzZero() {
+        assertEquals(128, Int128.ZERO.countTrailingZeroBits())
+    }
+
+    @Test fun ctzOne() {
+        assertEquals(0, Int128.ONE.countTrailingZeroBits())
+    }
+
+    @Test fun ctzPowerOfTwo() {
+        assertEquals(64, Int128(1L, 0L).countTrailingZeroBits())  // 2^64
+        assertEquals(127, Int128.MIN_VALUE.countTrailingZeroBits())  // 2^127
+    }
+
+    // ── hashCode contract ───────────────────────────────────────────
+
+    @Test fun equalObjectsHaveEqualHashCodes() {
+        val a = Int128(12345L, 67890L)
+        val b = Int128(12345L, 67890L)
+        assertEquals(a, b)
+        assertEquals(a.hashCode(), b.hashCode())
+    }
+
+    @Test fun differentObjectsLikelyDifferentHashCodes() {
+        val hashes = setOf(
+            Int128.ZERO.hashCode(), Int128.ONE.hashCode(),
+            Int128.MAX_VALUE.hashCode(), Int128.MIN_VALUE.hashCode(),
+            Int128.NEGATIVE_ONE.hashCode(),
+            Int128(12345L, 67890L).hashCode()
+        )
+        assertTrue(hashes.size >= 3, "Hash codes should vary across distinct values, got $hashes")
+    }
+
+    // ── toString all radixes ────────────────────────────────────────
+
+    @Test fun toStringAllRadixes() {
+        val v = Int128.fromLong(255)
+        assertEquals("11111111", v.toString(2))
+        assertEquals("377", v.toString(8))
+        assertEquals("255", v.toString(10))
+        assertEquals("ff", v.toString(16))
+        assertEquals("73", v.toString(36))
+    }
+
+    @Test fun toStringRadixBounds() {
+        assertFailsWith<IllegalArgumentException> { Int128.ONE.toString(1) }
+        assertFailsWith<IllegalArgumentException> { Int128.ONE.toString(37) }
+    }
+
+    // ── parseString error handling ──────────────────────────────────
+
+    @Test fun parseEmptyStringFails() {
+        assertFailsWith<IllegalArgumentException> { Int128.parseString("") }
+    }
+
+    @Test fun parseJustSignFails() {
+        assertFailsWith<IllegalArgumentException> { Int128.parseString("+") }
+        assertFailsWith<IllegalArgumentException> { Int128.parseString("-") }
+    }
+
+    @Test fun parseInvalidCharFails() {
+        assertFailsWith<NumberFormatException> { Int128.parseString("12x4") }
+    }
+
+    @Test fun parseOrNullReturnsNull() {
+        assertNull(Int128.parseStringOrNull(""))
+        assertNull(Int128.parseStringOrNull("abc"))
+        assertNull("not_a_number".toInt128OrNull())
+    }
+
+    @Test fun parseLeadingZeros() {
+        assertEquals(Int128.fromLong(7), Int128.parseString("007"))
+    }
+
+    @Test fun parseWithPlusSign() {
+        assertEquals(Int128.fromLong(42), Int128.parseString("+42"))
+    }
+
+    // ── sign property ───────────────────────────────────────────────
+
+    @Test fun signProperty() {
+        assertEquals(-1, Int128.MIN_VALUE.sign)
+        assertEquals(-1, Int128.NEGATIVE_ONE.sign)
+        assertEquals(0, Int128.ZERO.sign)
+        assertEquals(1, Int128.ONE.sign)
+        assertEquals(1, Int128.MAX_VALUE.sign)
+    }
 }

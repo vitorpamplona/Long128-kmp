@@ -184,4 +184,143 @@ class UInt128Test {
     @Test fun negativeStringThrows() {
         assertFailsWith<IllegalArgumentException> { "-1".toUInt128() }
     }
+
+    // ── Conversions ─────────────────────────────────────────────────
+
+    @Test fun toByteNarrows() {
+        assertEquals(0xFF.toByte(), UInt128.fromLong(0xFF).toByte())
+    }
+
+    @Test fun toIntNarrows() {
+        assertEquals(42, UInt128.fromLong(42).toInt())
+        assertEquals(0, UInt128(1L, 0L).toInt()) // 2^64 truncates
+    }
+
+    @Test fun toLongRoundTrip() {
+        assertEquals(42L, UInt128.fromLong(42).toLong())
+    }
+
+    @Test fun toULongRoundTrip() {
+        assertEquals(ULong.MAX_VALUE, UInt128(0L, -1L).toULong())
+    }
+
+    @Test fun toDoubleSmall() {
+        assertEquals(42.0, UInt128.fromLong(42).toDouble())
+    }
+
+    @Test fun toDoubleLargeUnsigned() {
+        // 2^64 - 1 (lo = -1 as Long, but unsigned = ULong.MAX_VALUE)
+        val v = UInt128(0L, -1L)
+        assertEquals(ULong.MAX_VALUE.toDouble(), v.toDouble(), 1.0)
+    }
+
+    @Test fun toDoublePow64() {
+        assertEquals(18446744073709551616.0, UInt128(1L, 0L).toDouble(), 1.0)
+    }
+
+    @Test fun toFloatSmall() {
+        assertEquals(42.0f, UInt128.fromLong(42).toFloat())
+    }
+
+    // ── inv ──────────────────────────────────────────────────────────
+
+    @Test fun invOp() {
+        assertEquals(UInt128.MAX_VALUE, UInt128.ZERO.inv())
+        assertEquals(UInt128.ZERO, UInt128.MAX_VALUE.inv())
+    }
+
+    // ── inc / dec ───────────────────────────────────────────────────
+
+    @Test fun incFromZero() {
+        var v = UInt128.ZERO
+        v++
+        assertEquals(UInt128.ONE, v)
+    }
+
+    @Test fun decFromOne() {
+        var v = UInt128.ONE
+        v--
+        assertEquals(UInt128.ZERO, v)
+    }
+
+    @Test fun incMaxWraps() {
+        var v = UInt128.MAX_VALUE
+        v++
+        assertEquals(UInt128.ZERO, v)
+    }
+
+    @Test fun decZeroWraps() {
+        var v = UInt128.ZERO
+        v--
+        assertEquals(UInt128.MAX_VALUE, v)
+    }
+
+    // ── Shift by 0 ──────────────────────────────────────────────────
+
+    @Test fun shlByZero() {
+        val v = UInt128(123L, 456L)
+        assertEquals(v, v shl 0)
+    }
+
+    @Test fun shrByZero() {
+        val v = UInt128(123L, 456L)
+        assertEquals(v, v shr 0)
+    }
+
+    // ── countTrailingZeroBits ───────────────────────────────────────
+
+    @Test fun ctzZero() {
+        assertEquals(128, UInt128.ZERO.countTrailingZeroBits())
+    }
+
+    @Test fun ctzOne() {
+        assertEquals(0, UInt128.ONE.countTrailingZeroBits())
+    }
+
+    @Test fun ctzPow64() {
+        assertEquals(64, UInt128(1L, 0L).countTrailingZeroBits())
+    }
+
+    // ── hashCode ────────────────────────────────────────────────────
+
+    @Test fun equalObjectsHaveEqualHashCodes() {
+        val a = UInt128(12345L, 67890L)
+        val b = UInt128(12345L, 67890L)
+        assertEquals(a, b)
+        assertEquals(a.hashCode(), b.hashCode())
+    }
+
+    // ── toString radixes ────────────────────────────────────────────
+
+    @Test fun toStringBinary() {
+        assertEquals("11111111", UInt128.fromLong(255).toString(2))
+    }
+
+    @Test fun toStringOctal() {
+        assertEquals("377", UInt128.fromLong(255).toString(8))
+    }
+
+    @Test fun toStringBase36() {
+        assertEquals("73", UInt128.fromLong(255).toString(36))
+    }
+
+    // ── parseString error handling ──────────────────────────────────
+
+    @Test fun parseEmptyFails() {
+        assertFailsWith<IllegalArgumentException> { UInt128.parseString("") }
+    }
+
+    @Test fun parseInvalidCharFails() {
+        assertFailsWith<NumberFormatException> { UInt128.parseString("12x4") }
+    }
+
+    @Test fun parseOrNullReturnsNull() {
+        assertNull(UInt128.parseStringOrNull(""))
+        assertNull(UInt128.parseStringOrNull("xyz"))
+        assertNull("-1".toUInt128OrNull())
+    }
+
+    @Test fun parseLeadingZeros() {
+        assertEquals(UInt128.fromLong(7), UInt128.parseString("007"))
+    }
 }
