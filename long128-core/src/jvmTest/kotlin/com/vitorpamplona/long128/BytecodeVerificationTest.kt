@@ -3,49 +3,81 @@ package com.vitorpamplona.long128
 import kotlin.test.*
 
 /**
- * Bytecode-level verification that the JVM implementation uses MethodHandle
- * dispatch to Math.multiplyHigh (not a direct invokestatic that D8 could desugar),
- * and that no boxing or BigInteger dependencies exist in the compiled output.
+ * Bytecode-level verification of every compiled class file.
+ *
+ * Ensures the JVM compilation output matches our performance claims:
+ * - MethodHandle dispatch (not invokestatic) for Math.multiplyHigh
+ * - No Long.valueOf boxing anywhere in the library
+ * - No BigInteger dependency anywhere
+ * - Correct intrinsic resolution on this JDK
+ *
+ * If any of these fail, a performance regression or dependency leak occurred.
  */
 class BytecodeVerificationTest {
 
+    // ── All classes that ship in the library jar ──────────────────────
+
+    private val allClasses = listOf(
+        "com.vitorpamplona.long128.Int128",
+        "com.vitorpamplona.long128.Int128\$Companion",
+        "com.vitorpamplona.long128.Int128Kt",
+        "com.vitorpamplona.long128.UInt128",
+        "com.vitorpamplona.long128.UInt128\$Companion",
+        "com.vitorpamplona.long128.UInt128Kt",
+        "com.vitorpamplona.long128.Int128Array",
+        "com.vitorpamplona.long128.Int128ArrayKt",
+        "com.vitorpamplona.long128.UInt128Array",
+        "com.vitorpamplona.long128.UInt128ArrayKt",
+        "com.vitorpamplona.long128.internal.PlatformIntrinsics_jvmKt",
+        "com.vitorpamplona.long128.internal.SoftwareArithmeticKt",
+    )
+
+    // ── No boxing in any class ───────────────────────────────────────
+
     @Test
-    fun intrinsicsClassReferencesMultiplyHighViaMethodHandle() {
-        val classText = loadClassText("com.vitorpamplona.long128.internal.PlatformIntrinsics_jvmKt")
+    fun noLongBoxingInAnyClass() {
+        for (fqn in allClasses) {
+            val text = loadClassTextOrNull(fqn) ?: continue
+            assertFalse(
+                text.contains("Long;") && text.contains("valueOf"),
+                "$fqn must not box Longs via Long.valueOf"
+            )
+        }
+    }
+
+    // ── No BigInteger dependency in any class ────────────────────────
+
+    @Test
+    fun noBigIntegerInAnyClass() {
+        for (fqn in allClasses) {
+            val text = loadClassTextOrNull(fqn) ?: continue
+            assertFalse(
+                text.contains("BigInteger"),
+                "$fqn must not reference java.math.BigInteger"
+            )
+        }
+    }
+
+    // ── MethodHandle dispatch for multiplyHigh ───────────────────────
+
+    @Test
+    fun intrinsicsUsesMethodHandleNotInvokestatic() {
+        val text = loadClassText("com.vitorpamplona.long128.internal.PlatformIntrinsics_jvmKt")
 
         assertTrue(
-            classText.contains("multiplyHigh"),
-            "PlatformIntrinsics_jvmKt must reference 'multiplyHigh' for MethodHandle lookup"
+            text.contains("multiplyHigh"),
+            "PlatformIntrinsics must reference 'multiplyHigh' for MethodHandle lookup"
         )
         assertTrue(
-            classText.contains("MethodHandle") || classText.contains("invoke"),
-            "PlatformIntrinsics_jvmKt must use MethodHandle for D8-safe dispatch"
+            text.contains("MethodHandle"),
+            "PlatformIntrinsics must use MethodHandle (not invokestatic) for D8-safe dispatch"
         )
     }
 
-    @Test
-    fun int128DoesNotBoxLongs() {
-        val classText = loadClassText("com.vitorpamplona.long128.Int128")
-        assertFalse(
-            classText.contains("java/lang/Long\u0001valueOf"),
-            "Int128.class must not box Longs via Long.valueOf"
-        )
-    }
+    // ── Intrinsic correctness on this JDK ────────────────────────────
 
     @Test
-    fun int128DoesNotUseBigInteger() {
-        val classText = loadClassText("com.vitorpamplona.long128.Int128")
-        assertFalse(classText.contains("BigInteger"), "Int128.class must not reference BigInteger")
-    }
-
-    @Test
-    fun softwareArithmeticDoesNotUseBigInteger() {
-        val classText = loadClassText("com.vitorpamplona.long128.internal.SoftwareArithmeticKt")
-        assertFalse(classText.contains("BigInteger"), "SoftwareArithmeticKt must not reference BigInteger")
-    }
-
-    @Test
-    fun mathMultiplyHighIsCallableOnThisJvm() {
+    fun mathMultiplyHighIsCallable() {
         assertEquals(0L, Math.multiplyHigh(Long.MAX_VALUE, 2L))
         assertEquals(0L, Math.multiplyHigh(-1L, -1L))
         assertEquals(-1L, Math.multiplyHigh(Long.MIN_VALUE, 2L))
@@ -53,16 +85,37 @@ class BytecodeVerificationTest {
 
     @Test
     fun unsignedMultiplyHighCorrectionIsCorrect() {
-        // (2^64-1) * (2^64-1) = 2^128 - 2^65 + 1 → high 64 bits = 0xFFFFFFFFFFFFFFFE
         assertEquals(-2L, com.vitorpamplona.long128.internal.unsignedMultiplyHigh(-1L, -1L))
         assertEquals(0L, com.vitorpamplona.long128.internal.unsignedMultiplyHigh(2L, 3L))
         assertEquals(1L, com.vitorpamplona.long128.internal.unsignedMultiplyHigh(Long.MIN_VALUE, 2L))
     }
 
-    private fun loadClassText(fqName: String): String {
-        val path = fqName.replace('.', '/') + ".class"
+    // ── Int128 and UInt128 both route through PlatformIntrinsics ─────
+
+    @Test
+    fun int128UsesPlatformIntrinsics() {
+        val text = loadClassText("com.vitorpamplona.long128.Int128")
+        assertTrue(text.contains("PlatformIntrinsics"), "Int128 must delegate to PlatformIntrinsics")
+    }
+
+    @Test
+    fun uint128UsesPlatformIntrinsics() {
+        val text = loadClassText("com.vitorpamplona.long128.UInt128")
+        assertTrue(text.contains("PlatformIntrinsics"), "UInt128 must delegate to PlatformIntrinsics")
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────
+
+    private fun loadClassText(fqn: String): String {
+        val path = fqn.replace('.', '/') + ".class"
         val bytes = this::class.java.classLoader.getResourceAsStream(path)?.readBytes()
             ?: error("Cannot find class file: $path")
         return bytes.decodeToString(throwOnInvalidSequence = false)
+    }
+
+    private fun loadClassTextOrNull(fqn: String): String? {
+        val path = fqn.replace('.', '/') + ".class"
+        return this::class.java.classLoader.getResourceAsStream(path)?.readBytes()
+            ?.decodeToString(throwOnInvalidSequence = false)
     }
 }
