@@ -173,16 +173,42 @@ Same two-`Long` representation as JVM. The critical challenge is accessing ARM64
 
 ## Performance
 
-Benchmarked on x86-64 Linux, JDK 21. C `__int128` (gcc -O2) is the performance floor.
+### Running the benchmark
 
-Run: `./benchmark/run-benchmarks.sh` or `./gradlew -q :benchmark:jvmRun`
+```bash
+./benchmark/run-benchmarks.sh
+```
 
-### How to read this
+This builds and runs both benchmarks from scratch, then prints three side-by-side comparison tables. Requires `gcc` and the Gradle wrapper. The Kotlin benchmark warms up HotSpot C2 with 3 rounds before measuring.
 
-Three tiers are measured to separate what matters:
-- **C `__int128`**: The hardware floor. Pure register arithmetic, no language overhead.
-- **Kotlin scalar**: Raw Long pairs, no `Int128` objects — simulates what Kotlin multi-field value classes (MFVC) will give us. Measures the cost of the instruction selection strategy (MethodHandle dispatch, carry detection pattern) without allocation.
-- **Kotlin `Int128`**: The real library API. Measures instruction cost **plus** heap allocation per result. This is what users experience today.
+You can also run them separately:
+
+```bash
+# C reference only
+gcc -O2 -o /tmp/bench benchmark/benchmark_c.c && /tmp/bench
+
+# Kotlin JVM only
+./gradlew -q :benchmark:jvmRun
+```
+
+### What the benchmark measures
+
+The C benchmark (`benchmark/benchmark_c.c`) runs each 128-bit operation in a tight loop using `__int128` compiled with `gcc -O2`. This is the performance floor — pure register arithmetic, no language overhead. A `volatile` sink prevents dead code elimination.
+
+The Kotlin benchmark (`benchmark/src/jvmMain/.../BenchmarkJvm.kt`) runs the **same operations with the same operand values** in three tiers:
+
+1. **Scalar** — Raw `Long` pairs with inline arithmetic (no `Int128` objects). This simulates what Kotlin multi-field value classes (MFVC) will provide when stabilized. The difference between C and scalar is the pure instruction overhead: MethodHandle dispatch, carry detection patterns, JVM loop mechanics.
+
+2. **Int128** — The real library API. Each `+`, `*`, etc. returns a new `Int128` heap object. The difference between scalar and Int128 is the allocation overhead: ~7ns per `new Int128(hi, lo)` on HotSpot.
+
+3. **Int128Array** — Bulk operations on a flat `LongArray` backing. Shows the cost when storage is pre-allocated but each `get`/`set` still creates a temporary `Int128`.
+
+The comparison script (`benchmark/run-benchmarks.sh`) parses both outputs and prints three tables:
+- **Instruction cost** — C vs Kotlin scalar (how good is the JIT?)
+- **Allocation cost** — Scalar vs Int128 (what does heap allocation add?)
+- **Full comparison** — All four tiers side by side with C-to-Int128 ratios
+
+### Results
 
 ### Arithmetic — instruction cost only (scalar Longs vs C)
 
