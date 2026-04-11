@@ -5,9 +5,9 @@ import kotlin.random.Random
 import kotlin.test.*
 
 /**
- * Verifies that platform-specific optimized paths (platformMul128,
- * platformSDivRem128, platformUDivRem128) produce identical results
- * to the pure-Kotlin reference implementations in MathUtils.kt.
+ * Verifies that platform-specific optimized paths (multiply128,
+ * signedDivide128, unsignedDivide128) produce identical results
+ * to a BigInteger oracle on every platform.
  *
  * This catches regressions where a platform implementation diverges
  * from the reference — e.g., wrong cinterop calling convention,
@@ -159,9 +159,9 @@ class PlatformConsistencyTest {
         )
 
         for ((a, b, expected) in cases) {
-            val actual = com.vitorpamplona.long128.internal.platformUnsignedMultiplyHigh(a, b)
+            val actual = com.vitorpamplona.long128.internal.unsignedMultiplyHigh(a, b)
             assertEquals(expected, actual,
-                "platformUnsignedMultiplyHigh(${a.toULong()}, ${b.toULong()}) on this platform")
+                "unsignedMultiplyHigh(${a.toULong()}, ${b.toULong()}) on this platform")
         }
     }
 }

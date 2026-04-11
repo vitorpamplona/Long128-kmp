@@ -54,8 +54,8 @@ class IntrinsicTierTest {
     // -- MethodHandle resolution tests ------------------------------------
 
     @Test
-    fun platformMultiplyHighUsesIntrinsicNotFallback() {
-        // Verify our platformUnsignedMultiplyHigh produces correct results
+    fun unsignedMultiplyHighUsesIntrinsicNotFallback() {
+        // Verify our unsignedMultiplyHigh produces correct results
         // AND that it's using the MethodHandle path (not the fallback).
         // We can't directly inspect which code path ran, but we can verify
         // the MethodHandle resolved successfully on this JDK.
@@ -77,9 +77,7 @@ class IntrinsicTierTest {
 
     @Test
     fun noDirectInvokestaticMathMultiplyHigh() {
-        // The class must NOT contain a direct reference to Math.multiplyHigh
-        // as a normal method call — it should use MethodHandle instead.
-        val classText = loadClassText("com/vitorpamplona/long128/internal/PlatformMath_jvmKt.class")
+        val classText = loadClassText("com/vitorpamplona/long128/internal/PlatformIntrinsics_jvmKt.class")
 
         // The string "multiplyHigh" SHOULD be present (as the method name for MethodHandle lookup)
         assertTrue(classText.contains("multiplyHigh"),
@@ -91,19 +89,19 @@ class IntrinsicTierTest {
     }
 
     @Test
-    fun noBoxingInPlatformMath() {
-        val classText = loadClassText("com/vitorpamplona/long128/internal/PlatformMath_jvmKt.class")
+    fun noBoxingInIntrinsics() {
+        val classText = loadClassText("com/vitorpamplona/long128/internal/PlatformIntrinsics_jvmKt.class")
 
         assertFalse(classText.contains("Long;") && classText.contains("valueOf"),
-            "PlatformMath must not box Longs via Long.valueOf")
+            "PlatformIntrinsics must not box Longs via Long.valueOf")
     }
 
     @Test
-    fun noBigIntegerInPlatformMath() {
-        val classText = loadClassText("com/vitorpamplona/long128/internal/PlatformMath_jvmKt.class")
+    fun noBigIntegerInIntrinsics() {
+        val classText = loadClassText("com/vitorpamplona/long128/internal/PlatformIntrinsics_jvmKt.class")
 
         assertFalse(classText.contains("BigInteger"),
-            "PlatformMath must not reference BigInteger")
+            "PlatformIntrinsics must not reference BigInteger")
     }
 
     // -- Tier correctness tests -------------------------------------------
@@ -121,11 +119,11 @@ class IntrinsicTierTest {
         )
 
         for ((a, b) in testCases.map { it[0] to it[1] }) {
-            val platform = com.vitorpamplona.long128.internal.platformUnsignedMultiplyHigh(a, b)
-            val manual = com.vitorpamplona.long128.internal.multiplyHighFallback(a, b) +
+            val platform = com.vitorpamplona.long128.internal.unsignedMultiplyHigh(a, b)
+            val manual = com.vitorpamplona.long128.internal.signedMultiplyHighFallback(a, b) +
                 (a and (b shr 63)) + (b and (a shr 63))
             assertEquals(manual, platform,
-                "platformUnsignedMultiplyHigh($a, $b) must match manual calculation")
+                "unsignedMultiplyHigh($a, $b) must match manual calculation")
         }
     }
 

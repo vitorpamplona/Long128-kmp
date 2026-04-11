@@ -22,9 +22,9 @@ echo ""
 # -------------------------------------------------------------------
 echo "--- JVM Bytecode ---"
 
-PLATFORM_CLASS="long128-core/build/classes/kotlin/jvm/main/com/vitorpamplona/long128/internal/PlatformMath_jvmKt.class"
+PLATFORM_CLASS="long128-core/build/classes/kotlin/jvm/main/com/vitorpamplona/long128/internal/PlatformIntrinsics_jvmKt.class"
 INT128_CLASS="long128-core/build/classes/kotlin/jvm/main/com/vitorpamplona/long128/Int128.class"
-MATHUTILS_CLASS="long128-core/build/classes/kotlin/jvm/main/com/vitorpamplona/long128/internal/MathUtilsKt.class"
+MATHUTILS_CLASS="long128-core/build/classes/kotlin/jvm/main/com/vitorpamplona/long128/internal/SoftwareArithmeticKt.class"
 
 if [ ! -f "$PLATFORM_CLASS" ]; then
     echo "  Class files not found. Run: ./gradlew :long128-core:jvmTest first"
@@ -40,10 +40,10 @@ else
 fi
 
 # Claim: fallback Karatsuba implementation exists for API < 31
-if echo "$BYTECODE" | grep -q "multiplyHighFallback"; then
-    pass "multiplyHighFallback → pure-Kotlin Karatsuba (4-imul) fallback present"
+if echo "$BYTECODE" | grep -q "signedMultiplyHighFallback"; then
+    pass "signedMultiplyHighFallback → pure-Kotlin Karatsuba (4-imul) fallback present"
 else
-    fail "multiplyHighFallback not found"
+    fail "signedMultiplyHighFallback not found"
 fi
 
 # Claim: no Long.valueOf boxing in Int128
@@ -63,9 +63,9 @@ fi
 
 MATH_BC=$(javap -c -p "$MATHUTILS_CLASS" 2>/dev/null)
 if echo "$MATH_BC" | grep -q "BigInteger"; then
-    fail "MathUtilsKt.class references BigInteger"
+    fail "SoftwareArithmeticKt.class references BigInteger"
 else
-    pass "MathUtilsKt.class has no BigInteger dependency"
+    pass "SoftwareArithmeticKt.class has no BigInteger dependency"
 fi
 
 echo ""
