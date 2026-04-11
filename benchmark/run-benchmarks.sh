@@ -1,78 +1,164 @@
 #!/bin/bash
-# run-benchmarks.sh — Compile and run C vs Kotlin benchmarks side by side.
-#
-# Measures how much overhead the Kotlin compilation stack adds vs pure C __int128.
-# The C benchmark is the performance floor; Kotlin results show the cost of:
-# - JVM: HotSpot JIT, object allocation, MethodHandle dispatch
-# - Native: cinterop call overhead, Kotlin/Native LLVM codegen
+# run-benchmarks.sh — Run C and Kotlin benchmarks, print side-by-side comparison.
 #
 # Usage: ./benchmark/run-benchmarks.sh
+#
+# Requires: gcc, java, gradle wrapper (./gradlew)
 
-set -e
+set -uo pipefail
 cd "$(dirname "$0")/.."
 
-echo "=============================================="
-echo " Long128-kmp: C vs Kotlin Benchmark"
-echo " $(uname -m) / $(uname -s) / JDK $(java -version 2>&1 | head -1 | grep -oP '"\K[^"]+')"
-echo "=============================================="
+JDK_VER=$(java -version 2>&1 | head -1 | grep -oP '"\K[^"]+' || echo "unknown")
+
+echo "══════════════════════════════════════════════════════════════════"
+echo " Long128-kmp: C vs Kotlin JVM Benchmark"
+echo " $(uname -m) / $(uname -s) / JDK $JDK_VER"
+echo "══════════════════════════════════════════════════════════════════"
 echo ""
 
-# ── 1. Build and run C reference ──────────────────────────────────
+# ── 1. C reference ───────────────────────────────────────────────────
 
-echo "[1/2] Building and running C benchmark (gcc -O2)..."
+echo "[1/2] C __int128 (gcc -O2) — performance floor"
 echo ""
 gcc -O2 -o /tmp/long128_bench_c benchmark/benchmark_c.c 2>/dev/null
-C_OUTPUT=$(/tmp/long128_bench_c)
-echo "$C_OUTPUT"
+C_RAW=$(/tmp/long128_bench_c)
+echo "$C_RAW"
 echo ""
 
-# ── 2. Build and run Kotlin JVM ───────────────────────────────────
+# ── 2. Kotlin JVM ────────────────────────────────────────────────────
 
-echo "[2/2] Building and running Kotlin JVM benchmark..."
+echo "[2/2] Kotlin Int128 (JVM, JDK $JDK_VER)"
 echo ""
-KT_OUTPUT=$(./gradlew -q :benchmark:jvmRun 2>/dev/null)
-echo "$KT_OUTPUT"
+KT_RAW=$(./gradlew -q :benchmark:jvmRun 2>/dev/null | grep -v "^Picked up JAVA")
+echo "$KT_RAW"
 echo ""
 
-# ── 3. Side-by-side comparison ────────────────────────────────────
+# ── 3. Parse results ─────────────────────────────────────────────────
 
-echo "=============================================="
-echo " Side-by-side comparison"
-echo "=============================================="
-printf "  %-18s %10s %10s %10s\n" "Operation" "C (ns)" "Kotlin (ns)" "Ratio"
-echo "  ──────────────────────────────────────────────"
+parse_ns() {
+    # Extract "label: 123.45 ns/op" → associative array
+    local -n arr=$1
+    while IFS= read -r line; do
+        local label=$(echo "$line" | sed 's/^ *//' | awk '{print $1}' | sed 's/://')
+        local value=$(echo "$line" | grep -oP '[\d.]+(?= ns/op)')
+        [ -n "$label" ] && [ -n "$value" ] && arr[$label]=$value
+    done <<< "$2"
+}
 
-declare -A c_results kt_results
+declare -A C KT_SCALAR KT_INT128 KT_ARRAY
 
-while IFS= read -r line; do
-    name=$(echo "$line" | sed 's/^ *//' | awk '{print $1}' | sed 's/://; s/^c_//')
-    value=$(echo "$line" | grep -oP '[\d.]+(?= ns/op)')
-    [ -n "$name" ] && [ -n "$value" ] && c_results[$name]=$value
-done <<< "$C_OUTPUT"
+parse_ns C "$C_RAW"
+# Parse all Kotlin output — labels are unique across tiers
+parse_ns KT_SCALAR "$KT_RAW"
+parse_ns KT_INT128 "$KT_RAW"
+parse_ns KT_ARRAY "$KT_RAW"
 
-while IFS= read -r line; do
-    name=$(echo "$line" | sed 's/^ *//' | awk '{print $1}' | sed 's/://; s/^kt_//')
-    value=$(echo "$line" | grep -oP '[\d.]+(?= ns/op)')
-    [ -n "$name" ] && [ -n "$value" ] && kt_results[$name]=$value
-done <<< "$KT_OUTPUT"
+# ── 4. Comparison tables ─────────────────────────────────────────────
 
-for op in add sub mul mul_high shift compare div_by_small div_by_large mixed; do
-    c_val=${c_results[$op]:-"—"}
-    kt_val=${kt_results[$op]:-"—"}
-    if [ "$c_val" != "—" ] && [ "$kt_val" != "—" ]; then
-        ratio=$(echo "scale=1; $kt_val / $c_val" | bc 2>/dev/null || echo "?")
-        printf "  %-18s %8s    %8s      %sx\n" "$op" "$c_val" "$kt_val" "$ratio"
-    else
-        printf "  %-18s %8s    %8s      %s\n" "$op" "$c_val" "$kt_val" "—"
+ratio() {
+    local c=$1 kt=$2
+    if [ "$c" = "—" ] || [ "$kt" = "—" ] || [ -z "$c" ] || [ -z "$kt" ]; then
+        echo "—"
+        return
     fi
+    # Check if C value is effectively zero
+    local is_zero
+    is_zero=$(echo "$c == 0" | bc 2>/dev/null || echo "1")
+    if [ "$is_zero" = "1" ]; then
+        echo "<0.3"
+        return
+    fi
+    echo "scale=1; $kt / $c" | bc 2>/dev/null || echo "?"
+}
+
+echo "══════════════════════════════════════════════════════════════════"
+echo " INSTRUCTION COST: C __int128 vs Kotlin scalar (raw Long pairs)"
+echo " (No object allocation — what MFVC will give us)"
+echo "══════════════════════════════════════════════════════════════════"
+printf "  %-18s %10s %10s %8s\n" "Operation" "C (ns)" "Scalar (ns)" "Ratio"
+echo "  ────────────────────────────────────────────────────────────"
+
+for pair in \
+    "add:c_add:scalar_add" \
+    "sub:c_sub:scalar_sub" \
+    "multiply:c_mul:scalar_mul" \
+    "mul high:c_mul_high:scalar_mul_high" \
+    "shift:c_shift:scalar_shift" \
+    "compare:c_compare:scalar_compare"
+do
+    IFS=: read -r label c_key kt_key <<< "$pair"
+    c_val=${C[$c_key]:-"—"}
+    kt_val=${KT_SCALAR[$kt_key]:-"—"}
+    r=$(ratio "$c_val" "$kt_val")
+    printf "  %-18s %8s    %8s      %sx\n" "$label" "$c_val" "$kt_val" "$r"
 done
 
 echo ""
-echo "  Ratio = Kotlin/C  (1.0x = same speed, 2.0x = Kotlin is 2x slower)"
+echo "══════════════════════════════════════════════════════════════════"
+echo " ALLOCATION COST: Kotlin scalar vs Int128 objects"
+echo " (Same instructions, but each result allocates a heap object)"
+echo "══════════════════════════════════════════════════════════════════"
+printf "  %-18s %10s %10s %8s\n" "Operation" "Scalar (ns)" "Int128 (ns)" "Overhead"
+echo "  ────────────────────────────────────────────────────────────"
+
+for pair in \
+    "add:scalar_add:int128_add" \
+    "sub:scalar_sub:int128_sub" \
+    "multiply:scalar_mul:int128_mul" \
+    "shift:scalar_shift:int128_shift" \
+    "compare:scalar_compare:int128_compare"
+do
+    IFS=: read -r label s_key i_key <<< "$pair"
+    s_val=${KT_SCALAR[$s_key]:-"—"}
+    i_val=${KT_INT128[$i_key]:-"—"}
+    r=$(ratio "$s_val" "$i_val")
+    printf "  %-18s %8s    %8s      %sx\n" "$label" "$s_val" "$i_val" "$r"
+done
+
 echo ""
-echo "  What the ratio measures:"
-echo "    add/sub/shift/compare: Kotlin carry-detection pattern vs C __int128"
-echo "    mul/mul_high: MethodHandle→Math.multiplyHigh vs C mul instruction"
-echo "    div: Pure-Kotlin O(128) loop vs C __divti3 runtime"
-echo "    mixed: Realistic workload (mul-accumulate + occasional mod)"
+echo "══════════════════════════════════════════════════════════════════"
+echo " FULL COMPARISON: C vs Int128 vs Int128Array"
+echo "══════════════════════════════════════════════════════════════════"
+printf "  %-14s %8s %8s %8s %8s %8s\n" "Operation" "C" "Scalar" "Int128" "Array" "C→Int128"
+echo "  ──────────────────────────────────────────────────────────────"
+
+for pair in \
+    "add:c_add:scalar_add:int128_add:array_add" \
+    "multiply:c_mul:scalar_mul:int128_mul:array_mul"
+do
+    IFS=: read -r label c_key s_key i_key a_key <<< "$pair"
+    c_val=${C[$c_key]:-"—"}
+    s_val=${KT_SCALAR[$s_key]:-"—"}
+    i_val=${KT_INT128[$i_key]:-"—"}
+    a_val=${KT_ARRAY[$a_key]:-"—"}
+    r=$(ratio "$c_val" "$i_val")
+    printf "  %-14s %6s   %6s   %6s   %6s   %sx\n" "$label" "$c_val" "$s_val" "$i_val" "$a_val" "$r"
+done
+
+# Division (no scalar/array variants)
+for pair in \
+    "div (small):c_div_by_small:int128_div_sm" \
+    "div (large):c_div_by_large:int128_div_lg"
+do
+    IFS=: read -r label c_key i_key <<< "$pair"
+    c_val=${C[$c_key]:-"—"}
+    i_val=${KT_INT128[$i_key]:-"—"}
+    r=$(ratio "$c_val" "$i_val")
+    printf "  %-14s %6s   %6s   %6s   %6s   %sx\n" "$label" "$c_val" "—" "$i_val" "—" "$r"
+done
+
+# Mixed
+c_val=${C[c_mixed]:-"—"}
+i_val=${KT_INT128[int128_mixed]:-"—"}
+r=$(ratio "$c_val" "$i_val")
+printf "  %-14s %6s   %6s   %6s   %6s   %sx\n" "mixed" "$c_val" "—" "$i_val" "—" "$r"
+
+echo ""
+echo "  Ratio = Kotlin ns / C ns  (1.0x = same speed)"
+echo ""
+echo "  Columns:"
+echo "    C        — gcc -O2, __int128, register arithmetic (performance floor)"
+echo "    Scalar   — raw Long pairs in Kotlin, no Int128 objects (MFVC preview)"
+echo "    Int128   — real library API, heap object per result"
+echo "    Array    — Int128Array flat backing, pre-allocated storage"
 echo ""
