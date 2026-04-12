@@ -122,11 +122,11 @@ else
 fi
 
 # Claim: division calls runtime helper (no hardware 128÷128 div exists on x86-64)
-SDIV=$(echo "$DISASM" | sed -n '/<int128_sdiv>:/,/ret$/p')
+SDIV=$(echo "$DISASM" | sed -n '/<int128_sdivrem>:/,/ret$/p')
 if echo "$SDIV" | grep -q "call"; then
-    pass "int128_sdiv → calls __divti3 runtime (no hardware 128÷128 div on x86-64, as documented)"
+    pass "int128_sdivrem → calls __divti3 runtime (no hardware 128÷128 div on x86-64, as documented)"
 else
-    fail "int128_sdiv does not call runtime helper (unexpected)"
+    fail "int128_sdivrem does not call runtime helper (unexpected)"
 fi
 
 # Claim: int128_add uses add + adc (carry flag, not branch)

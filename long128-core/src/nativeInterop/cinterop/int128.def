@@ -3,128 +3,114 @@ package = int128ops
 ---
 #include <stdint.h>
 
-typedef struct { int64_t hi; int64_t lo; } int128_parts;
+/*
+ * 128-bit arithmetic helpers.
+ *
+ * All multi-word return values use OUT POINTERS (not struct returns) for
+ * portability across calling conventions:
+ *   - System V (Linux, macOS): would return small structs in RAX:RDX
+ *   - Windows x64 (MinGW): returns structs > 8 bytes via hidden pointer
+ *   - Out parameters work identically on both ABIs.
+ *
+ * Single int64_t return values use the standard return register (RAX/x0).
+ */
 
-/* Signed multiply-high: high 64 bits of (int64 * int64) treated as signed */
+/* ── Multiply-high (single int64_t return, ABI-portable) ──────── */
+
+/* Signed: high 64 bits of (signed64 × signed64) */
 int64_t int128_multiply_high_signed(int64_t a, int64_t b) {
     __int128 result = (__int128)a * (__int128)b;
     return (int64_t)(result >> 64);
 }
 
-/* Unsigned multiply-high: high 64 bits of (uint64 * uint64) treated as unsigned */
+/* Unsigned: high 64 bits of (uint64 × uint64) */
 int64_t int128_multiply_high_unsigned(int64_t a, int64_t b) {
     unsigned __int128 result = (unsigned __int128)(uint64_t)a * (uint64_t)b;
     return (int64_t)(result >> 64);
 }
 
-/* Full 128x128 wrapping multiply (low 128 bits of the 256-bit product) */
-int128_parts int128_mul(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+/* ── Full 128-bit operations (out parameters) ─────────────────── */
+
+void int128_mul(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo,
+                int64_t* out_hi, int64_t* out_lo) {
     unsigned __int128 a = ((unsigned __int128)(uint64_t)a_hi << 64) | (uint64_t)a_lo;
     unsigned __int128 b = ((unsigned __int128)(uint64_t)b_hi << 64) | (uint64_t)b_lo;
     unsigned __int128 r = a * b;
-    int128_parts res;
-    res.hi = (int64_t)(r >> 64);
-    res.lo = (int64_t)r;
-    return res;
+    *out_hi = (int64_t)(r >> 64);
+    *out_lo = (int64_t)r;
 }
 
-/* Signed 128-bit divide. Caller must ensure b != 0 and not (a==MIN && b==-1). */
-int128_parts int128_sdiv(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+/* Signed 128÷128 div + rem. Caller must ensure b != 0 and not (a==MIN && b==-1). */
+void int128_sdivrem(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo,
+                    int64_t* q_hi, int64_t* q_lo,
+                    int64_t* r_hi, int64_t* r_lo) {
     __int128 a = ((__int128)a_hi << 64) | (uint64_t)a_lo;
     __int128 b = ((__int128)b_hi << 64) | (uint64_t)b_lo;
     __int128 q = a / b;
-    int128_parts res;
-    res.hi = (int64_t)(q >> 64);
-    res.lo = (int64_t)q;
-    return res;
-}
-
-/* Signed 128-bit remainder. Caller must ensure b != 0. */
-int128_parts int128_srem(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
-    __int128 a = ((__int128)a_hi << 64) | (uint64_t)a_lo;
-    __int128 b = ((__int128)b_hi << 64) | (uint64_t)b_lo;
     __int128 r = a % b;
-    int128_parts res;
-    res.hi = (int64_t)(r >> 64);
-    res.lo = (int64_t)r;
-    return res;
+    *q_hi = (int64_t)(q >> 64);
+    *q_lo = (int64_t)q;
+    *r_hi = (int64_t)(r >> 64);
+    *r_lo = (int64_t)r;
 }
 
-/* Unsigned 128-bit divide. Caller must ensure b != 0. */
-int128_parts uint128_div(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+/* Unsigned 128÷128 div + rem. Caller must ensure b != 0. */
+void uint128_udivrem(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo,
+                     int64_t* q_hi, int64_t* q_lo,
+                     int64_t* r_hi, int64_t* r_lo) {
     unsigned __int128 a = ((unsigned __int128)(uint64_t)a_hi << 64) | (uint64_t)a_lo;
     unsigned __int128 b = ((unsigned __int128)(uint64_t)b_hi << 64) | (uint64_t)b_lo;
     unsigned __int128 q = a / b;
-    int128_parts res;
-    res.hi = (int64_t)(q >> 64);
-    res.lo = (int64_t)q;
-    return res;
-}
-
-/* Unsigned 128-bit remainder. Caller must ensure b != 0. */
-int128_parts uint128_rem(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
-    unsigned __int128 a = ((unsigned __int128)(uint64_t)a_hi << 64) | (uint64_t)a_lo;
-    unsigned __int128 b = ((unsigned __int128)(uint64_t)b_hi << 64) | (uint64_t)b_lo;
     unsigned __int128 r = a % b;
-    int128_parts res;
-    res.hi = (int64_t)(r >> 64);
-    res.lo = (int64_t)r;
-    return res;
+    *q_hi = (int64_t)(q >> 64);
+    *q_lo = (int64_t)q;
+    *r_hi = (int64_t)(r >> 64);
+    *r_lo = (int64_t)r;
 }
 
-/* ---------- Add / Sub / Compare (compiles to add+adc, sub+sbb, cmp) ---------- */
+/* ── Add / Sub / Neg (out parameters) ─────────────────────────── */
 
-int128_parts int128_add(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+void int128_add(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo,
+                int64_t* out_hi, int64_t* out_lo) {
     unsigned __int128 a = ((unsigned __int128)(uint64_t)a_hi << 64) | (uint64_t)a_lo;
     unsigned __int128 b = ((unsigned __int128)(uint64_t)b_hi << 64) | (uint64_t)b_lo;
     unsigned __int128 r = a + b;
-    int128_parts res;
-    res.hi = (int64_t)(r >> 64);
-    res.lo = (int64_t)r;
-    return res;
+    *out_hi = (int64_t)(r >> 64);
+    *out_lo = (int64_t)r;
 }
 
-int128_parts int128_sub(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+void int128_sub(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo,
+                int64_t* out_hi, int64_t* out_lo) {
     unsigned __int128 a = ((unsigned __int128)(uint64_t)a_hi << 64) | (uint64_t)a_lo;
     unsigned __int128 b = ((unsigned __int128)(uint64_t)b_hi << 64) | (uint64_t)b_lo;
     unsigned __int128 r = a - b;
-    int128_parts res;
-    res.hi = (int64_t)(r >> 64);
-    res.lo = (int64_t)r;
-    return res;
+    *out_hi = (int64_t)(r >> 64);
+    *out_lo = (int64_t)r;
 }
 
-int128_parts int128_neg(int64_t a_hi, int64_t a_lo) {
+void int128_neg(int64_t a_hi, int64_t a_lo, int64_t* out_hi, int64_t* out_lo) {
     unsigned __int128 a = ((unsigned __int128)(uint64_t)a_hi << 64) | (uint64_t)a_lo;
     unsigned __int128 r = -a;
-    int128_parts res;
-    res.hi = (int64_t)(r >> 64);
-    res.lo = (int64_t)r;
-    return res;
+    *out_hi = (int64_t)(r >> 64);
+    *out_lo = (int64_t)r;
 }
 
-/* Signed comparison: returns -1, 0, or 1 */
+/* ── Comparisons (single int32 return, ABI-portable) ──────────── */
+
 int32_t int128_scmp(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
     __int128 a = ((__int128)a_hi << 64) | (uint64_t)a_lo;
     __int128 b = ((__int128)b_hi << 64) | (uint64_t)b_lo;
     return (a > b) - (a < b);
 }
 
-/* Unsigned comparison: returns -1, 0, or 1 */
 int32_t uint128_cmp(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
     unsigned __int128 a = ((unsigned __int128)(uint64_t)a_hi << 64) | (uint64_t)a_lo;
     unsigned __int128 b = ((unsigned __int128)(uint64_t)b_hi << 64) | (uint64_t)b_lo;
     return (a > b) - (a < b);
 }
 
-/* ---------- Batch operations (amortize cinterop call overhead) ---------- */
+/* ── Batch operations (already use pointers — ABI-safe) ───────── */
 
-/**
- * Add arrays: out[i] = a[i] + b[i]. Each element is (hi, lo) stored contiguously.
- * @param data  interleaved array: [a0_hi, a0_lo, b0_hi, b0_lo, a1_hi, a1_lo, b1_hi, b1_lo, ...]
- * @param out   output array: [r0_hi, r0_lo, r1_hi, r1_lo, ...]
- * @param count number of pairs
- */
 void int128_batch_add(const int64_t* a, const int64_t* b, int64_t* out, int32_t count) {
     for (int32_t i = 0; i < count; i++) {
         unsigned __int128 va = ((unsigned __int128)(uint64_t)a[i*2] << 64) | (uint64_t)a[i*2+1];
