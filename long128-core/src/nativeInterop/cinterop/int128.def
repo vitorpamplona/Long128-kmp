@@ -1,0 +1,132 @@
+package = int128ops
+
+---
+#include <stdint.h>
+
+/*
+ * 128-bit arithmetic helpers.
+ *
+ * All multi-word return values use OUT POINTERS (not struct returns) for
+ * portability across calling conventions:
+ *   - System V (Linux, macOS): would return small structs in RAX:RDX
+ *   - Windows x64 (MinGW): returns structs > 8 bytes via hidden pointer
+ *   - Out parameters work identically on both ABIs.
+ *
+ * Single int64_t return values use the standard return register (RAX/x0).
+ */
+
+/* ── Multiply-high (single int64_t return, ABI-portable) ──────── */
+
+/* Signed: high 64 bits of (signed64 × signed64) */
+int64_t int128_multiply_high_signed(int64_t a, int64_t b) {
+    __int128 result = (__int128)a * (__int128)b;
+    return (int64_t)(result >> 64);
+}
+
+/* Unsigned: high 64 bits of (uint64 × uint64) */
+int64_t int128_multiply_high_unsigned(int64_t a, int64_t b) {
+    unsigned __int128 result = (unsigned __int128)(uint64_t)a * (uint64_t)b;
+    return (int64_t)(result >> 64);
+}
+
+/* ── Full 128-bit operations (out parameters) ─────────────────── */
+
+void int128_mul(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo,
+                int64_t* out_hi, int64_t* out_lo) {
+    unsigned __int128 a = ((unsigned __int128)(uint64_t)a_hi << 64) | (uint64_t)a_lo;
+    unsigned __int128 b = ((unsigned __int128)(uint64_t)b_hi << 64) | (uint64_t)b_lo;
+    unsigned __int128 r = a * b;
+    *out_hi = (int64_t)(r >> 64);
+    *out_lo = (int64_t)r;
+}
+
+/* Signed 128÷128 div + rem. Caller must ensure b != 0 and not (a==MIN && b==-1). */
+void int128_sdivrem(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo,
+                    int64_t* q_hi, int64_t* q_lo,
+                    int64_t* r_hi, int64_t* r_lo) {
+    __int128 a = ((__int128)a_hi << 64) | (uint64_t)a_lo;
+    __int128 b = ((__int128)b_hi << 64) | (uint64_t)b_lo;
+    __int128 q = a / b;
+    __int128 r = a % b;
+    *q_hi = (int64_t)(q >> 64);
+    *q_lo = (int64_t)q;
+    *r_hi = (int64_t)(r >> 64);
+    *r_lo = (int64_t)r;
+}
+
+/* Unsigned 128÷128 div + rem. Caller must ensure b != 0. */
+void uint128_udivrem(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo,
+                     int64_t* q_hi, int64_t* q_lo,
+                     int64_t* r_hi, int64_t* r_lo) {
+    unsigned __int128 a = ((unsigned __int128)(uint64_t)a_hi << 64) | (uint64_t)a_lo;
+    unsigned __int128 b = ((unsigned __int128)(uint64_t)b_hi << 64) | (uint64_t)b_lo;
+    unsigned __int128 q = a / b;
+    unsigned __int128 r = a % b;
+    *q_hi = (int64_t)(q >> 64);
+    *q_lo = (int64_t)q;
+    *r_hi = (int64_t)(r >> 64);
+    *r_lo = (int64_t)r;
+}
+
+/* ── Add / Sub / Neg (out parameters) ─────────────────────────── */
+
+void int128_add(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo,
+                int64_t* out_hi, int64_t* out_lo) {
+    unsigned __int128 a = ((unsigned __int128)(uint64_t)a_hi << 64) | (uint64_t)a_lo;
+    unsigned __int128 b = ((unsigned __int128)(uint64_t)b_hi << 64) | (uint64_t)b_lo;
+    unsigned __int128 r = a + b;
+    *out_hi = (int64_t)(r >> 64);
+    *out_lo = (int64_t)r;
+}
+
+void int128_sub(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo,
+                int64_t* out_hi, int64_t* out_lo) {
+    unsigned __int128 a = ((unsigned __int128)(uint64_t)a_hi << 64) | (uint64_t)a_lo;
+    unsigned __int128 b = ((unsigned __int128)(uint64_t)b_hi << 64) | (uint64_t)b_lo;
+    unsigned __int128 r = a - b;
+    *out_hi = (int64_t)(r >> 64);
+    *out_lo = (int64_t)r;
+}
+
+void int128_neg(int64_t a_hi, int64_t a_lo, int64_t* out_hi, int64_t* out_lo) {
+    unsigned __int128 a = ((unsigned __int128)(uint64_t)a_hi << 64) | (uint64_t)a_lo;
+    unsigned __int128 r = -a;
+    *out_hi = (int64_t)(r >> 64);
+    *out_lo = (int64_t)r;
+}
+
+/* ── Comparisons (single int32 return, ABI-portable) ──────────── */
+
+int32_t int128_scmp(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+    __int128 a = ((__int128)a_hi << 64) | (uint64_t)a_lo;
+    __int128 b = ((__int128)b_hi << 64) | (uint64_t)b_lo;
+    return (a > b) - (a < b);
+}
+
+int32_t uint128_cmp(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+    unsigned __int128 a = ((unsigned __int128)(uint64_t)a_hi << 64) | (uint64_t)a_lo;
+    unsigned __int128 b = ((unsigned __int128)(uint64_t)b_hi << 64) | (uint64_t)b_lo;
+    return (a > b) - (a < b);
+}
+
+/* ── Batch operations (already use pointers — ABI-safe) ───────── */
+
+void int128_batch_add(const int64_t* a, const int64_t* b, int64_t* out, int32_t count) {
+    for (int32_t i = 0; i < count; i++) {
+        unsigned __int128 va = ((unsigned __int128)(uint64_t)a[i*2] << 64) | (uint64_t)a[i*2+1];
+        unsigned __int128 vb = ((unsigned __int128)(uint64_t)b[i*2] << 64) | (uint64_t)b[i*2+1];
+        unsigned __int128 r = va + vb;
+        out[i*2]   = (int64_t)(r >> 64);
+        out[i*2+1] = (int64_t)r;
+    }
+}
+
+void int128_batch_mul(const int64_t* a, const int64_t* b, int64_t* out, int32_t count) {
+    for (int32_t i = 0; i < count; i++) {
+        unsigned __int128 va = ((unsigned __int128)(uint64_t)a[i*2] << 64) | (uint64_t)a[i*2+1];
+        unsigned __int128 vb = ((unsigned __int128)(uint64_t)b[i*2] << 64) | (uint64_t)b[i*2+1];
+        unsigned __int128 r = va * vb;
+        out[i*2]   = (int64_t)(r >> 64);
+        out[i*2+1] = (int64_t)r;
+    }
+}
