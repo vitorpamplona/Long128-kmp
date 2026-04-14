@@ -20,7 +20,7 @@ class IntrinsicTierTest {
 
     @Test
     fun mathMultiplyHighIsAvailable() {
-        // We require JDK 9+. If this fails, the build target is wrong.
+        // We require JDK 17+. If this fails, the build target is wrong.
         val mh = try {
             MethodHandles.lookup().findStatic(
                 Math::class.java, "multiplyHigh",
@@ -28,7 +28,7 @@ class IntrinsicTierTest {
             )
         } catch (_: Throwable) { null }
 
-        assertNotNull(mh, "Math.multiplyHigh must be available on JDK $jdkVersion (>= 9)")
+        assertNotNull(mh, "Math.multiplyHigh must be available on JDK $jdkVersion (>= 17)")
     }
 
     @Test
@@ -132,11 +132,10 @@ class IntrinsicTierTest {
         // Not a test per se — prints the JDK version and active tier for CI logs.
         val tier = when {
             jdkVersion >= 18 -> "Tier 1: Math.unsignedMultiplyHigh (single MUL/UMULH insn)"
-            jdkVersion >= 9 -> "Tier 2: Math.multiplyHigh + unsigned correction (3 extra insns)"
-            else -> "Tier 3: Karatsuba 4-imul fallback"
+            else -> "Tier 2: Math.multiplyHigh + unsigned correction (3 extra insns)"
         }
         println("JDK version: $jdkVersion → $tier")
-        assertTrue(jdkVersion >= 9, "Build requires JDK 9+, got $jdkVersion")
+        assertTrue(jdkVersion >= 17, "Build requires JDK 17+, got $jdkVersion")
     }
 
     // -- Helpers --
