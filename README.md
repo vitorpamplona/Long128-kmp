@@ -28,6 +28,8 @@ dependencies {
 }
 ```
 
+**Requirements:** JDK 17 or newer on the JVM target. Android is supported via the same JVM artifact; the D8 desugarer handles `Math.multiplyHigh` absence on API < 31 transparently (see [Platform dispatch](#platform-dispatch)).
+
 ## Performance: how close to C?
 
 Every number below comes from `./benchmark/run-benchmarks.sh`, which compiles a C `__int128` benchmark (`gcc -O2`) and an equivalent Kotlin JVM benchmark, runs both, and prints side-by-side comparison tables.
@@ -208,6 +210,8 @@ Every claim in this README is machine-verified:
 | Kotlin carry pattern → `adc` | Compile equivalent C pattern, compare objdump | Identical output |
 
 ## Building
+
+Requires JDK 17 or newer. CI runs the JVM test suite against JDK 17 and 21.
 
 ```bash
 ./gradlew :long128-core:jvmTest          # JVM tests
