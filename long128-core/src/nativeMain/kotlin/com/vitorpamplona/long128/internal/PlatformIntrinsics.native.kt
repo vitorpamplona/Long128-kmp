@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+
 package com.vitorpamplona.long128.internal
 
 import int128ops.*

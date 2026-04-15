@@ -5,11 +5,12 @@ package com.vitorpamplona.long128.internal
  *
  * Each platform provides the fastest available implementation:
  *
- * - **JVM**: Resolves `Math.multiplyHigh` (JDK 9+) and `Math.unsignedMultiplyHigh`
- *   (JDK 18+) via [java.lang.invoke.MethodHandle] at class-load time. MethodHandle
- *   dispatch avoids Android D8 desugaring (D8 replaces `invokestatic Math.multiplyHigh`
- *   with a software fallback, but cannot intercept `MethodHandle.invokeExact`).
- *   Falls back to a pure-Kotlin Karatsuba decomposition when unavailable.
+ * - **JVM**: Resolves `Math.multiplyHigh` and `Math.unsignedMultiplyHigh` (JDK 18+)
+ *   via [java.lang.invoke.MethodHandle] at class-load time. MethodHandle dispatch
+ *   avoids Android D8 desugaring (D8 replaces `invokestatic Math.multiplyHigh` with
+ *   a software fallback, but cannot intercept `MethodHandle.invokeExact`). Falls
+ *   back to a pure-Kotlin Karatsuba decomposition when unavailable (e.g. Android
+ *   API < 31, where D8 strips `Math.multiplyHigh`).
  *
  * - **Native (x86-64, ARM64)**: Delegates to C functions compiled from `__int128`
  *   via cinterop. The C compiler (Clang) emits the optimal hardware instruction:
@@ -27,8 +28,8 @@ package com.vitorpamplona.long128.internal
  *
  * This is the critical bottleneck operation. Platform implementations:
  * - JVM JDK 18+: `Math.unsignedMultiplyHigh` → single `MUL`/`UMULH` instruction
- * - JVM JDK 9-17: `Math.multiplyHigh` + signed-to-unsigned correction (3 extra insns)
- * - JVM JDK 8: Karatsuba 4-multiply decomposition (pure Kotlin)
+ * - JVM JDK 17: `Math.multiplyHigh` + signed-to-unsigned correction (3 extra insns)
+ * - Android API < 31: Karatsuba 4-multiply decomposition (pure Kotlin, D8 fallback)
  * - Native: cinterop `unsigned __int128` multiply → single `mul`/`umulh`
  */
 internal expect fun unsignedMultiplyHigh(x: Long, y: Long): Long

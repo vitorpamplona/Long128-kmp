@@ -28,7 +28,7 @@ import com.vitorpamplona.long128.internal.*
  *
  * Multiply and divide delegate to [multiply128] and [signedDivide128], which each
  * platform implements optimally:
- * - **JVM**: Uses `Math.multiplyHigh` (JDK 9+) / `Math.unsignedMultiplyHigh` (JDK 18+)
+ * - **JVM** (17+): Uses `Math.multiplyHigh` / `Math.unsignedMultiplyHigh` (JDK 18+)
  *   resolved via [java.lang.invoke.MethodHandle] to avoid Android D8 desugaring.
  * - **Native**: Uses C interop with `__int128`, compiled to `mul`/`umulh` (ARM64)
  *   or `mul`/`imul` (x86-64) by Clang.

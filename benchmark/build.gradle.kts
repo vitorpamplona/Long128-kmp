@@ -1,11 +1,17 @@
+import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
+
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
 }
 
 kotlin {
+    @OptIn(ExperimentalKotlinGradlePluginApi::class)
     jvm {
         compilerOptions {
-            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+        }
+        mainRun {
+            mainClass.set("com.vitorpamplona.long128.benchmark.BenchmarkJvmKt")
         }
     }
 
@@ -14,12 +20,4 @@ kotlin {
             implementation(project(":long128-core"))
         }
     }
-}
-
-tasks.register<JavaExec>("jvmRun") {
-    dependsOn("jvmJar")
-    val jvmJar = tasks.named<Jar>("jvmJar")
-    classpath = files(jvmJar.map { it.archiveFile }) +
-        configurations.getByName("jvmRuntimeClasspath")
-    mainClass.set("com.vitorpamplona.long128.benchmark.BenchmarkJvmKt")
 }

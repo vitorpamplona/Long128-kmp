@@ -6,8 +6,8 @@ import java.lang.invoke.MethodType
 /**
  * JVM intrinsics for 128-bit arithmetic.
  *
- * Resolves `Math.multiplyHigh` (JDK 9+) and `Math.unsignedMultiplyHigh` (JDK 18+)
- * via [MethodHandle] at class-load time rather than `invokestatic`. This is necessary
+ * Resolves `Math.multiplyHigh` and `Math.unsignedMultiplyHigh` (JDK 18+) via
+ * [MethodHandle] at class-load time rather than `invokestatic`. This is necessary
  * because Android's D8 tool scans bytecode for `invokestatic Math.multiplyHigh` and
  * replaces it with a pure-Java backport when the app's `minSdk < 31` — even if the
  * library itself targets a higher API. MethodHandle dispatch is invisible to D8.
@@ -25,7 +25,7 @@ private val LONG_LONG_TO_LONG = MethodType.methodType(
 
 /**
  * `Math.multiplyHigh(long, long)` → signed high 64 bits of 128-bit product.
- * Available on JDK 9+ / Android API 31+. HotSpot intrinsifies to `IMUL` (x86) / `SMULH` (ARM).
+ * Always present on our minimum JDK 17. HotSpot intrinsifies to `IMUL` (x86) / `SMULH` (ARM).
  */
 private val SIGNED_MULTIPLY_HIGH: java.lang.invoke.MethodHandle? = try {
     MethodHandles.lookup().findStatic(Math::class.java, "multiplyHigh", LONG_LONG_TO_LONG)
