@@ -49,13 +49,21 @@ class Int128Array(val size: Int) {
 
     override fun hashCode(): Int = data.contentHashCode()
 
-    override fun toString(): String = buildString {
-        append('[')
+    // Note: we use a plain StringBuilder rather than `buildString { ... }` on
+    // purpose. Inside a `buildString` lambda, the implicit receiver becomes
+    // the StringBuilder, and kotlin.text provides an extension
+    // `StringBuilder.get(index: Int): Char`. That means an unqualified
+    // `get(i)` call inside the lambda resolves to `charAt(i)` on the builder
+    // — not `Int128Array.get(i)` — and the output is silently garbage.
+    override fun toString(): String {
+        val sb = StringBuilder()
+        sb.append('[')
         for (i in 0 until size) {
-            if (i > 0) append(", ")
-            append(get(i))
+            if (i > 0) sb.append(", ")
+            sb.append(get(i).toString())
         }
-        append(']')
+        sb.append(']')
+        return sb.toString()
     }
 }
 
@@ -99,13 +107,17 @@ class UInt128Array(val size: Int) {
 
     override fun hashCode(): Int = data.contentHashCode()
 
-    override fun toString(): String = buildString {
-        append('[')
+    // See the note on [Int128Array.toString]: `buildString` shadows `get` to
+    // `StringBuilder.charAt`, so we use a plain StringBuilder here instead.
+    override fun toString(): String {
+        val sb = StringBuilder()
+        sb.append('[')
         for (i in 0 until size) {
-            if (i > 0) append(", ")
-            append(get(i))
+            if (i > 0) sb.append(", ")
+            sb.append(get(i).toString())
         }
-        append(']')
+        sb.append(']')
+        return sb.toString()
     }
 }
 

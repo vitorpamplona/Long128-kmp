@@ -351,13 +351,13 @@ private fun int128ArrayExamples() {
         Int128.fromLong(20L),
         Int128.fromLong(30L),
     )
-    show("arr",      formatInt128Array(arr))
+    show("arr",      arr)
     show("arr.size", arr.size)
     show("arr[0]",   arr[0])
 
     // Mutate in place.
     arr[1] = arr[1] * Int128.fromLong(2L)
-    show("after arr[1] *= 2", formatInt128Array(arr))
+    show("after arr[1] *= 2", arr)
 
     // Iterate — each element is re-boxed into an `Int128` object, but the
     // storage itself stays flat.
@@ -369,32 +369,14 @@ private fun int128ArrayExamples() {
     // work when you want zero per-element headers.
     val big = Int128Array(size = 8)
     for (i in 0 until big.size) big[i] = Int128.fromLong((i * i).toLong())
-    show("i*i array", formatInt128Array(big))
-}
-
-private fun formatInt128Array(arr: Int128Array): String = buildString {
-    append('[')
-    for (i in 0 until arr.size) {
-        if (i > 0) append(", ")
-        append(arr[i].toString())
-    }
-    append(']')
-}
-
-private fun formatUInt128Array(arr: UInt128Array): String = buildString {
-    append('[')
-    for (i in 0 until arr.size) {
-        if (i > 0) append(", ")
-        append(arr[i].toString())
-    }
-    append(']')
+    show("i*i array", big)
 }
 
 // ─── Section 17 ───────────────────────────────────────────────────────────────
 
 private fun uint128ArrayExamples() {
     val arr = uint128ArrayOf(UInt128.ONE, UInt128.fromLong(2L), UInt128.fromLong(3L))
-    show("uint arr", formatUInt128Array(arr))
+    show("uint arr", arr)
 
     // Reduce style: multiply them together.
     var product = UInt128.ONE
