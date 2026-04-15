@@ -54,7 +54,7 @@ jobs:
           name: test-results-linux-x64
           path: "**/build/reports/tests/"
 
-  # ── macOS (ARM64 + x64) ──────────────────────────────────────────
+  # ── macOS (ARM64 + x64 via Rosetta) ──────────────────────────────
   test-macos:
     strategy:
       fail-fast: false
@@ -62,11 +62,16 @@ jobs:
         include:
           - os: macos-14       # ARM64 (M1)
             target: macosArm64Test
-          - os: macos-13       # x64
+            needs-rosetta: false
+          - os: macos-14       # x64 via Rosetta 2 (macos-13 was retired Dec 2025)
             target: macosX64Test
+            needs-rosetta: true
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Install Rosetta 2
+        if: matrix.needs-rosetta
+        run: softwareupdate --install-rosetta --agree-to-license
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
