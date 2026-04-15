@@ -8,7 +8,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-JDK_VER=$(java -version 2>&1 | head -1 | grep -oP '"\K[^"]+' || echo "unknown")
+JDK_VER=$(java -version 2>&1 | awk -F'"' '/version/ {print $2; exit}')
+[ -z "$JDK_VER" ] && JDK_VER="unknown"
 
 echo "══════════════════════════════════════════════════════════════════"
 echo " Long128-kmp: C vs Kotlin JVM Benchmark"
@@ -40,7 +41,8 @@ parse_ns() {
     local -n arr=$1
     while IFS= read -r line; do
         local label=$(echo "$line" | sed 's/^ *//' | awk '{print $1}' | sed 's/://')
-        local value=$(echo "$line" | grep -oP '[\d.]+(?= ns/op)')
+        # Extract the number that immediately precedes "ns/op" — portable awk replacement for grep -P lookahead
+        local value=$(echo "$line" | awk '{for(i=1;i<=NF;i++) if($i=="ns/op") {print $(i-1); exit}}')
         [ -n "$label" ] && [ -n "$value" ] && arr[$label]=$value
     done <<< "$2"
 }
