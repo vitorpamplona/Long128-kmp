@@ -37,17 +37,28 @@ echo ""
 # ── 3. Parse results ─────────────────────────────────────────────────
 
 parse_ns() {
-    # Extract "label: 123.45 ns/op" → associative array
-    local -n arr=$1
+    # Extract "label: 123.45 ns/op" → variables named <prefix>_<label>
+    # (bash 3.2 compatible: no associative arrays, no namerefs — macOS ships bash 3.2)
+    local prefix=$1
+    local data=$2
+    local line label value safe_label
     while IFS= read -r line; do
-        local label=$(echo "$line" | sed 's/^ *//' | awk '{print $1}' | sed 's/://')
+        label=$(echo "$line" | sed 's/^ *//' | awk '{print $1}' | sed 's/://')
         # Extract the number that immediately precedes "ns/op" — portable awk replacement for grep -P lookahead
-        local value=$(echo "$line" | awk '{for(i=1;i<=NF;i++) if($i=="ns/op") {print $(i-1); exit}}')
-        [ -n "$label" ] && [ -n "$value" ] && arr[$label]=$value
-    done <<< "$2"
+        value=$(echo "$line" | awk '{for(i=1;i<=NF;i++) if($i=="ns/op") {print $(i-1); exit}}')
+        if [ -n "$label" ] && [ -n "$value" ]; then
+            # printf (not echo) so tr -c doesn't pick up a trailing newline
+            safe_label=$(printf '%s' "$label" | tr -c 'a-zA-Z0-9_' '_')
+            eval "${prefix}_${safe_label}=\$value"
+        fi
+    done <<< "$data"
 }
 
-declare -A C KT_SCALAR KT_INT128 KT_ARRAY
+# Look up a parsed value: get_val <prefix> <key>, prints "—" if unset.
+get_val() {
+    local var="$1_$2"
+    eval "printf '%s' \"\${$var:-—}\""
+}
 
 parse_ns C "$C_RAW"
 # Parse all Kotlin output — labels are unique across tiers
@@ -89,8 +100,8 @@ for pair in \
     "compare:c_compare:scalar_compare"
 do
     IFS=: read -r label c_key kt_key <<< "$pair"
-    c_val=${C[$c_key]:-"—"}
-    kt_val=${KT_SCALAR[$kt_key]:-"—"}
+    c_val=$(get_val C "$c_key")
+    kt_val=$(get_val KT_SCALAR "$kt_key")
     r=$(ratio "$c_val" "$kt_val")
     printf "  %-18s %8s    %8s      %sx\n" "$label" "$c_val" "$kt_val" "$r"
 done
@@ -111,8 +122,8 @@ for pair in \
     "compare:scalar_compare:int128_compare"
 do
     IFS=: read -r label s_key i_key <<< "$pair"
-    s_val=${KT_SCALAR[$s_key]:-"—"}
-    i_val=${KT_INT128[$i_key]:-"—"}
+    s_val=$(get_val KT_SCALAR "$s_key")
+    i_val=$(get_val KT_INT128 "$i_key")
     r=$(ratio "$s_val" "$i_val")
     printf "  %-18s %8s    %8s      %sx\n" "$label" "$s_val" "$i_val" "$r"
 done
@@ -129,10 +140,10 @@ for pair in \
     "multiply:c_mul:scalar_mul:int128_mul:array_mul"
 do
     IFS=: read -r label c_key s_key i_key a_key <<< "$pair"
-    c_val=${C[$c_key]:-"—"}
-    s_val=${KT_SCALAR[$s_key]:-"—"}
-    i_val=${KT_INT128[$i_key]:-"—"}
-    a_val=${KT_ARRAY[$a_key]:-"—"}
+    c_val=$(get_val C "$c_key")
+    s_val=$(get_val KT_SCALAR "$s_key")
+    i_val=$(get_val KT_INT128 "$i_key")
+    a_val=$(get_val KT_ARRAY "$a_key")
     r=$(ratio "$c_val" "$i_val")
     printf "  %-14s %6s   %6s   %6s   %6s   %sx\n" "$label" "$c_val" "$s_val" "$i_val" "$a_val" "$r"
 done
@@ -143,15 +154,15 @@ for pair in \
     "div (large):c_div_by_large:int128_div_lg"
 do
     IFS=: read -r label c_key i_key <<< "$pair"
-    c_val=${C[$c_key]:-"—"}
-    i_val=${KT_INT128[$i_key]:-"—"}
+    c_val=$(get_val C "$c_key")
+    i_val=$(get_val KT_INT128 "$i_key")
     r=$(ratio "$c_val" "$i_val")
     printf "  %-14s %6s   %6s   %6s   %6s   %sx\n" "$label" "$c_val" "—" "$i_val" "—" "$r"
 done
 
 # Mixed
-c_val=${C[c_mixed]:-"—"}
-i_val=${KT_INT128[int128_mixed]:-"—"}
+c_val=$(get_val C c_mixed)
+i_val=$(get_val KT_INT128 int128_mixed)
 r=$(ratio "$c_val" "$i_val")
 printf "  %-14s %6s   %6s   %6s   %6s   %sx\n" "mixed" "$c_val" "—" "$i_val" "—" "$r"
 
