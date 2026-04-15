@@ -70,6 +70,33 @@ class Int128ArrayTest {
         assertEquals(UInt128.MAX_VALUE, arr[1])
     }
 
+    @Test fun int128ArrayToString() {
+        assertEquals("[]", Int128Array(0).toString())
+        assertEquals(
+            "[10, 20, 30]",
+            int128ArrayOf(Int128.fromLong(10), Int128.fromLong(20), Int128.fromLong(30))
+                .toString(),
+        )
+        assertEquals("[-1]", int128ArrayOf(Int128.NEGATIVE_ONE).toString())
+        assertEquals(
+            "[0, 170141183460469231731687303715884105727, -170141183460469231731687303715884105728]",
+            int128ArrayOf(Int128.ZERO, Int128.MAX_VALUE, Int128.MIN_VALUE).toString(),
+        )
+    }
+
+    @Test fun uint128ArrayToString() {
+        assertEquals("[]", UInt128Array(0).toString())
+        assertEquals(
+            "[1, 2, 3]",
+            uint128ArrayOf(UInt128.ONE, UInt128.fromLong(2), UInt128.fromLong(3))
+                .toString(),
+        )
+        assertEquals(
+            "[0, 340282366920938463463374607431768211455]",
+            uint128ArrayOf(UInt128.ZERO, UInt128.MAX_VALUE).toString(),
+        )
+    }
+
     // Verify array operations maintain correctness through round-trip
     @Test fun arithmeticOnArrayElements() {
         val a = int128ArrayOf(Int128.fromLong(100), Int128.MAX_VALUE, Int128.MIN_VALUE)
