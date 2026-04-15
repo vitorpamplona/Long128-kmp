@@ -47,6 +47,7 @@ publishing {
             name.set("Long128-kmp")
             description.set("Kotlin Multiplatform 128-bit integer types (Int128/UInt128) with platform-optimized arithmetic")
             url.set("https://github.com/vitorpamplona/Long128-kmp")
+            inceptionYear.set("2026")
             licenses {
                 license {
                     name.set("MIT License")
@@ -58,6 +59,7 @@ publishing {
                     id.set("vitorpamplona")
                     name.set("Vitor Pamplona")
                     url.set("https://github.com/vitorpamplona")
+                    email.set("vitor@vitorpamplona.com")
                 }
             }
             scm {
