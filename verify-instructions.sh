@@ -81,10 +81,30 @@ DEF_FILE="long128-core/src/nativeInterop/cinterop/int128.def"
 sed '1,/^---$/d' "$DEF_FILE" > /tmp/long128_cinterop.c
 
 gcc -O2 -c -o /tmp/long128_cinterop.o /tmp/long128_cinterop.c 2>/dev/null
-DISASM=$(objdump -d -M intel /tmp/long128_cinterop.o)
+# Prefer Intel syntax; fall back to LLVM objdump's flag if -M intel is unsupported.
+if ! DISASM=$(objdump -d -M intel /tmp/long128_cinterop.o 2>/dev/null) || [ -z "$DISASM" ]; then
+    DISASM=$(objdump -d --x86-asm-syntax=intel /tmp/long128_cinterop.o 2>/dev/null \
+             || objdump -d /tmp/long128_cinterop.o)
+fi
+
+# Helper: extract disassembly of a single function. Handles both:
+#   - GNU/ELF objdump:  "0000000000000000 <int128_add>:"
+#   - LLVM/Mach-O objdump (macOS): "_int128_add:"
+extract_func() {
+    local fname="$1"
+    local result
+    result=$(echo "$DISASM" | sed -n "/<${fname}>:/,/^[[:space:]]*$/p")
+    if [ -z "$result" ]; then
+        result=$(echo "$DISASM" | sed -n "/^_${fname}:/,/^[[:space:]]*$/p")
+    fi
+    if [ -z "$result" ]; then
+        result=$(echo "$DISASM" | sed -n "/^${fname}:/,/^[[:space:]]*$/p")
+    fi
+    echo "$result"
+}
 
 # Claim: int128_multiply_high_signed uses a single imul instruction
-SIGNED_MUL=$(echo "$DISASM" | sed -n '/<int128_multiply_high_signed>:/,/ret$/p')
+SIGNED_MUL=$(extract_func int128_multiply_high_signed)
 if echo "$SIGNED_MUL" | grep -q "imul.*rsi\|imul.*rdi"; then
     pass "int128_multiply_high_signed → single 'imul' instruction (128-bit signed multiply)"
 else
@@ -92,37 +112,39 @@ else
 fi
 
 # Claim: int128_multiply_high_unsigned uses a single mul instruction
-UNSIGNED_MUL=$(echo "$DISASM" | sed -n '/<int128_multiply_high_unsigned>:/,/ret$/p')
-if echo "$UNSIGNED_MUL" | grep -qP "\tmul\s"; then
+# Match standalone 'mul' (excluding 'imul'): a non-letter must precede 'mul'.
+UNSIGNED_MUL=$(extract_func int128_multiply_high_unsigned)
+if echo "$UNSIGNED_MUL" | grep -qE '[^a-zA-Z]mul[[:space:]]'; then
     pass "int128_multiply_high_unsigned → single 'mul' instruction (128-bit unsigned multiply)"
 else
     fail "int128_multiply_high_unsigned does not use mul"
 fi
 
 # Count instructions in the multiply_high functions (excluding nop/endbr/ret)
-SIGNED_INSN_COUNT=$(echo "$SIGNED_MUL" | grep -cP "^\s+[0-9a-f]+:" | head -1)
+SIGNED_INSN_COUNT=$(echo "$SIGNED_MUL" | grep -cE '^[[:space:]]+[0-9a-f]+:')
+[ -z "$SIGNED_INSN_COUNT" ] && SIGNED_INSN_COUNT=0
 # Expect: endbr64, mov, imul, mov, ret = 5 instructions
-if [ "$SIGNED_INSN_COUNT" -le 6 ]; then
+if [ "$SIGNED_INSN_COUNT" -le 6 ] && [ "$SIGNED_INSN_COUNT" -gt 0 ]; then
     pass "int128_multiply_high_signed is $SIGNED_INSN_COUNT instructions (minimal)"
 else
-    fail "int128_multiply_high_signed is $SIGNED_INSN_COUNT instructions (expected ≤6)"
+    fail "int128_multiply_high_signed is $SIGNED_INSN_COUNT instructions (expected 1..6)"
 fi
 
 # Claim: full 128x128 multiply uses no loops or calls
-FULL_MUL=$(echo "$DISASM" | sed -n '/<int128_mul>:/,/ret$/p')
+FULL_MUL=$(extract_func int128_mul)
 if echo "$FULL_MUL" | grep -q "call\|loop\|jmp"; then
     fail "int128_mul contains call/loop/jmp (not straight-line code)"
 else
     pass "int128_mul → straight-line code (no loops, no function calls)"
 fi
-if echo "$FULL_MUL" | grep -qP "\tmul\s"; then
+if echo "$FULL_MUL" | grep -qE '[^a-zA-Z]mul[[:space:]]'; then
     pass "int128_mul uses hardware 'mul' instruction"
 else
     fail "int128_mul does not use hardware mul"
 fi
 
 # Claim: division calls runtime helper (no hardware 128÷128 div exists on x86-64)
-SDIV=$(echo "$DISASM" | sed -n '/<int128_sdivrem>:/,/ret$/p')
+SDIV=$(extract_func int128_sdivrem)
 if echo "$SDIV" | grep -q "call"; then
     pass "int128_sdivrem → calls __divti3 runtime (no hardware 128÷128 div on x86-64, as documented)"
 else
@@ -130,7 +152,7 @@ else
 fi
 
 # Claim: int128_add uses add + adc (carry flag, not branch)
-ADD_FUNC=$(echo "$DISASM" | sed -n '/<int128_add>:/,/ret$/p')
+ADD_FUNC=$(extract_func int128_add)
 if echo "$ADD_FUNC" | grep -q "adc"; then
     pass "int128_add → add + adc (hardware carry flag, no branch)"
 else
@@ -138,7 +160,7 @@ else
 fi
 
 # Claim: int128_sub uses sub + sbb (borrow flag, not branch)
-SUB_FUNC=$(echo "$DISASM" | sed -n '/<int128_sub>:/,/ret$/p')
+SUB_FUNC=$(extract_func int128_sub)
 if echo "$SUB_FUNC" | grep -q "sbb"; then
     pass "int128_sub → sub + sbb (hardware borrow flag, no branch)"
 else
@@ -146,7 +168,7 @@ else
 fi
 
 # Claim: batch_add uses add + adc in a tight loop
-BATCH_ADD=$(echo "$DISASM" | sed -n '/<int128_batch_add>:/,/ret$/p')
+BATCH_ADD=$(extract_func int128_batch_add)
 if echo "$BATCH_ADD" | grep -q "adc"; then
     pass "int128_batch_add → add + adc in loop (amortized cinterop overhead)"
 else
