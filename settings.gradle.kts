@@ -14,3 +14,4 @@ dependencyResolutionManagement {
 rootProject.name = "Long128-kmp"
 include(":long128-core")
 include(":benchmark")
+include(":examples")
