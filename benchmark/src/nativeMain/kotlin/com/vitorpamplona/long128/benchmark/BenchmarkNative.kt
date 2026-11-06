@@ -32,6 +32,8 @@ private val benchmarks: Array<Pair<String, (Int) -> Unit>> = arrayOf(
     "── Int128 (the library API) ─────────────────────────────" to {},
     "" to ::int128Add, "" to ::int128Sub, "" to ::int128Mul, "" to ::int128Shift,
     "" to ::int128Compare, "div" to ::int128DivSmall, "div" to ::int128DivLarge, "" to ::int128Mixed,
+    "── MutableUInt128 accumulator (allocated once, updated in place) ──" to {},
+    "" to ::mutableAdd, "" to ::mutableMul, "div" to ::mutableDivSmall, "div" to ::mutableDivLarge, "" to ::mutableMixed,
     "── Int128Array (flat LongArray storage) ─────────────────" to {},
     "" to ::arrayAdd, "" to ::arrayMul,
 )
@@ -349,6 +351,67 @@ fun arrayMul(iterations: Int) {
     val ns = elapsed(start) / iterations
     sink = result[0].lo
     printf("  array_mul:       %8.2f ns/op\n", ns)
+}
+
+// ── MutableUInt128: the loops above, with an in-place accumulator ─────────
+
+fun mutableAdd(iterations: Int) {
+    val a = UInt128(0x12345678L, -0x6543210FL)
+    val b = UInt128(-0x01234568L, 0x76543210L)
+    val acc = MutableUInt128()
+    val start = TimeSource.Monotonic.markNow()
+    for (i in 0 until iterations) { acc += a; acc += b }
+    val ns = elapsed(start) / (iterations * 2)
+    sink = acc.lo
+    printf("  mutable_add:     %8.2f ns/op\n", ns)
+}
+
+fun mutableMul(iterations: Int) {
+    val a = UInt128(0x12345678L, -0x6543210FL)
+    val b = UInt128(0L, -0x0123456789ABCDF0L)
+    val acc = MutableUInt128(UInt128.ONE)
+    val start = TimeSource.Monotonic.markNow()
+    for (i in 0 until iterations) acc.multiplyAdd(a, b)
+    val ns = elapsed(start) / iterations
+    sink = acc.lo
+    printf("  mutable_mul:     %8.2f ns/op\n", ns)
+}
+
+fun mutableDivSmall(iterations: Int) {
+    val a = UInt128(0x12345678L, -0x6543210FL)
+    val d = UInt128(0L, 7L)
+    val acc = MutableUInt128(a)
+    val start = TimeSource.Monotonic.markNow()
+    for (i in 0 until iterations) { acc /= d; acc += a }
+    val ns = elapsed(start) / iterations
+    sink = acc.lo
+    printf("  mutable_div_sm:  %8.2f ns/op\n", ns)
+}
+
+fun mutableDivLarge(iterations: Int) {
+    val a = UInt128(-1L, -16L)
+    val d = UInt128(3L, 7L)
+    val acc = MutableUInt128(a)
+    val start = TimeSource.Monotonic.markNow()
+    for (i in 0 until iterations) { acc /= d; acc += a }
+    val ns = elapsed(start) / iterations
+    sink = acc.lo
+    printf("  mutable_div_lg:  %8.2f ns/op\n", ns)
+}
+
+fun mutableMixed(iterations: Int) {
+    val acc = MutableUInt128(UInt128.ONE)
+    val factor = UInt128(0L, -0x0123456789ABCDF0L)
+    val addend = UInt128(0x11L, 0x22L)
+    val divisor = UInt128(0L, 1000000007L)
+    val start = TimeSource.Monotonic.markNow()
+    for (i in 0 until iterations) {
+        acc.multiplyAdd(factor, addend)
+        if ((i and 0xFF) == 0) acc %= divisor
+    }
+    val ns = elapsed(start) / iterations
+    sink = acc.lo
+    printf("  mutable_mixed:   %8.2f ns/op\n", ns)
 }
 
 /** Minimal `%8.2f` formatter: Kotlin/Native has no String.format. */

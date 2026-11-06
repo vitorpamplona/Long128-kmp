@@ -115,31 +115,34 @@ value class Int128 @PublishedApi internal constructor(@PublishedApi internal val
     /** Left shift. Shift amount is masked to 0..127 (`bitCount and 127`). */
     infix fun shl(bitCount: Int): Int128 {
         val n = bitCount and 127
-        return when {
-            n == 0 -> this
-            n < 64 -> Int128((hi shl n) or (lo ushr (64 - n)), lo shl n)
-            else -> Int128(lo shl (n - 64), 0L)
-        }
+        // n == 0 must not reach the `64 - n` shifts (a shift by 64 is a shift by 0)
+        // One construction site so escape analysis can scalar-replace the result.
+        return Int128(
+            if (n == 0) hi else if (n < 64) (hi shl n) or (lo ushr (64 - n)) else lo shl (n - 64),
+            if (n == 0) lo else if (n < 64) lo shl n else 0L,
+        )
     }
 
     /** Arithmetic right shift (sign-extending). Shift amount masked to 0..127. */
     infix fun shr(bitCount: Int): Int128 {
         val n = bitCount and 127
-        return when {
-            n == 0 -> this
-            n < 64 -> Int128(hi shr n, (lo ushr n) or (hi shl (64 - n)))
-            else -> Int128(hi shr 63, hi shr (n - 64)) // fills with sign bit
-        }
+        // n == 0 must not reach the `64 - n` shifts (a shift by 64 is a shift by 0)
+        // One construction site so escape analysis can scalar-replace the result.
+        return Int128(
+            if (n == 0) hi else if (n < 64) hi shr n else hi shr 63,
+            if (n == 0) lo else if (n < 64) (lo ushr n) or (hi shl (64 - n)) else hi shr (n - 64),
+        ) // fills with sign bit
     }
 
     /** Logical right shift (zero-filling). Shift amount masked to 0..127. */
     infix fun ushr(bitCount: Int): Int128 {
         val n = bitCount and 127
-        return when {
-            n == 0 -> this
-            n < 64 -> Int128(hi ushr n, (lo ushr n) or (hi shl (64 - n)))
-            else -> Int128(0L, hi ushr (n - 64))
-        }
+        // n == 0 must not reach the `64 - n` shifts (a shift by 64 is a shift by 0)
+        // One construction site so escape analysis can scalar-replace the result.
+        return Int128(
+            if (n == 0) hi else if (n < 64) hi ushr n else 0L,
+            if (n == 0) lo else if (n < 64) (lo ushr n) or (hi shl (64 - n)) else hi ushr (n - 64),
+        )
     }
 
     // ── Comparison ───────────────────────────────────────────────────

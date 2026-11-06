@@ -80,21 +80,23 @@ value class UInt128 @PublishedApi internal constructor(@PublishedApi internal va
     /** Left shift. Shift amount masked to 0..127. */
     infix fun shl(bitCount: Int): UInt128 {
         val n = bitCount and 127
-        return when {
-            n == 0 -> this
-            n < 64 -> UInt128((hi shl n) or (lo ushr (64 - n)), lo shl n)
-            else -> UInt128(lo shl (n - 64), 0L)
-        }
+        // n == 0 must not reach the `64 - n` shifts (a shift by 64 is a shift by 0)
+        // One construction site so escape analysis can scalar-replace the result.
+        return UInt128(
+            if (n == 0) hi else if (n < 64) (hi shl n) or (lo ushr (64 - n)) else lo shl (n - 64),
+            if (n == 0) lo else if (n < 64) lo shl n else 0L,
+        )
     }
 
     /** Logical right shift (always zero-filling). Shift amount masked to 0..127. */
     infix fun shr(bitCount: Int): UInt128 {
         val n = bitCount and 127
-        return when {
-            n == 0 -> this
-            n < 64 -> UInt128(hi ushr n, (lo ushr n) or (hi shl (64 - n)))
-            else -> UInt128(0L, hi ushr (n - 64))
-        }
+        // n == 0 must not reach the `64 - n` shifts (a shift by 64 is a shift by 0)
+        // One construction site so escape analysis can scalar-replace the result.
+        return UInt128(
+            if (n == 0) hi else if (n < 64) hi ushr n else 0L,
+            if (n == 0) lo else if (n < 64) (lo ushr n) or (hi shl (64 - n)) else hi ushr (n - 64),
+        )
     }
 
     // ── Comparison (unsigned) ────────────────────────────────────────

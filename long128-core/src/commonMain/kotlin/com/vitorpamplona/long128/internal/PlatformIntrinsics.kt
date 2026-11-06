@@ -63,7 +63,7 @@ internal expect fun signedMultiplyHigh(x: Long, y: Long): Long
  *
  * @throws ArithmeticException if the divisor is zero.
  *
- * - JVM: pure-Kotlin binary long division ([unsignedDivRem] in SoftwareArithmetic.kt).
+ * - JVM: Knuth algorithm D on 64-bit hardware division ([unsignedQuotient] in SoftwareArithmetic.kt).
  * - Native: `unsigned __int128` division via `@GCUnsafeCall` → one `__udivti3` call;
  *   when a caller needs both quotient and remainder LLVM shares the one division.
  */
@@ -93,3 +93,10 @@ internal expect fun signedQuotient128(
 internal expect fun signedRemainder128(
     dividendHi: Long, dividendLo: Long, divisorHi: Long, divisorLo: Long,
 ): com.vitorpamplona.long128.Int128
+
+/**
+ * Unsigned 64-bit division. JVM: `java.lang.Long.divideUnsigned`, which HotSpot
+ * compiles to a single `div` from JDK 19 (Kotlin's own `ULong` division is a
+ * software routine the JIT does not recognize). Native: LLVM `udiv`.
+ */
+internal expect fun divideUnsigned64(dividend: Long, divisor: Long): Long

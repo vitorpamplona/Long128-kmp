@@ -127,3 +127,5 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Run C vs Kotlin JVM vs Kotlin/Native benchmark
         run: ./benchmark/run-benchmarks.sh
+      - name: Run JMH (JVM, quick)
+        run: ./gradlew :benchmark-jmh:jvmQuickBenchmark

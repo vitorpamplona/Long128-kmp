@@ -30,6 +30,11 @@ class BytecodeVerificationTest {
         "com.vitorpamplona.long128.UInt128ArrayKt",
         "com.vitorpamplona.long128.internal.PlatformIntrinsics_jvmKt",
         "com.vitorpamplona.long128.internal.SoftwareArithmeticKt",
+        "com.vitorpamplona.long128.MutableInt128",
+        "com.vitorpamplona.long128.MutableUInt128",
+        "com.vitorpamplona.long128.MultiplyHighKt",
+        "com.vitorpamplona.long128.internal.Bits128",
+        "com.vitorpamplona.long128.internal.Bits128_jvmKt",
     )
 
     // ── No boxing in any class ───────────────────────────────────────

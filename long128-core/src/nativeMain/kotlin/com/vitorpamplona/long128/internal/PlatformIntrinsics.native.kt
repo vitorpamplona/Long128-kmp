@@ -133,3 +133,6 @@ internal actual fun signedRemainder128(
         cSRemLo(dividendHi, dividendLo, divisorHi, divisorLo),
     )
 }
+
+internal actual fun divideUnsigned64(dividend: Long, divisor: Long): Long =
+    (dividend.toULong() / divisor.toULong()).toLong()

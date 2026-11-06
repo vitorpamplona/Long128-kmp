@@ -211,7 +211,11 @@ if [ -n "$KN_RAW" ]; then
         "compare:c_compare:scalar_compare:int128_compare:-" \
         "div (small):c_div_by_small:-:int128_div_sm:-" \
         "div (large):c_div_by_large:-:int128_div_lg:-" \
-        "mixed:c_mixed:-:int128_mixed:-"
+        "mixed:c_mixed:-:int128_mixed:-" \
+        "mul (mutable):c_mul:-:mutable_mul:-" \
+        "div sm (mutable):c_div_by_small_rt:-:mutable_div_sm:-" \
+        "div lg (mutable):c_div_by_large_rt:-:mutable_div_lg:-" \
+        "mixed (mutable):c_mixed:-:mutable_mixed:-"
     do
         IFS=: read -r label c_key s_key i_key a_key <<< "$pair"
         c_val=$(get_val C "$c_key")
@@ -231,4 +235,8 @@ echo "    C        — gcc -O2, __int128, register arithmetic (performance floor
 echo "    Scalar   — raw Long pairs in Kotlin, no Int128 values (the arithmetic alone)"
 echo "    Int128   — real library API (a register value on native, one object per result on the JVM)"
 echo "    Array    — Int128Array flat backing, pre-allocated storage"
+echo "    mutable  — MutableUInt128 accumulator updated in place (Int128 column)"
+echo ""
+echo "  JVM numbers here come from a quick single-shot harness; for JMH run:"
+echo "    ./gradlew :benchmark-jmh:jvmBenchmark"
 echo ""
