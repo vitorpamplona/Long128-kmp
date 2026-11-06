@@ -4,11 +4,11 @@ import com.vitorpamplona.long128.internal.*
 import kotlin.test.*
 
 /**
- * Native-only tests that verify the cinterop path is actually being used.
+ * Native-only tests that exercise the C `__int128` helpers.
  *
  * These tests can only run on native targets (linuxX64, macosArm64, etc.)
- * where `PlatformIntrinsics.native.kt` delegates to the C functions in
- * `int128.def`. They verify that:
+ * where `PlatformIntrinsics.native.kt` calls the C functions in `int128.def`
+ * through `@GCUnsafeCall`. They verify that:
  *
  * 1. The cinterop functions are linked and callable (not just compiled)
  * 2. The results match the pure-Kotlin software arithmetic

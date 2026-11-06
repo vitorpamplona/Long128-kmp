@@ -26,12 +26,12 @@ import com.vitorpamplona.long128.internal.*
  *
  * ## Platform optimization
  *
- * Multiply and divide delegate to [multiply128] and [signedDivide128], which each
- * platform implements optimally:
+ * Multiply and divide delegate to [unsignedMultiplyHigh] and [signedDivide128], which
+ * each platform implements optimally:
  * - **JVM** (17+): Uses `Math.multiplyHigh` / `Math.unsignedMultiplyHigh` (JDK 18+)
  *   resolved via [java.lang.invoke.MethodHandle] to avoid Android D8 desugaring.
- * - **Native**: Uses C interop with `__int128`, compiled to `mul`/`umulh` (ARM64)
- *   or `mul`/`imul` (x86-64) by Clang.
+ * - **Native**: Calls C `__int128` code through `@GCUnsafeCall`; LLVM inlines it,
+ *   so multiply-high is a single `mul` (x86-64) / `umulh` (ARM64).
  *
  * Addition and subtraction are pure Kotlin on all platforms. The carry detection
  * pattern `(result.toULong() < operand.toULong())` is recognized by LLVM and
@@ -58,10 +58,8 @@ class Int128(val hi: Long, val lo: Long) : Comparable<Int128> {
         return Int128(hi - other.hi - borrow, resultLo)
     }
 
-    operator fun times(other: Int128): Int128 {
-        val result = multiply128(hi, lo, other.hi, other.lo)
-        return Int128(result[0], result[1])
-    }
+    operator fun times(other: Int128): Int128 =
+        Int128(multiply128High(hi, lo, other.hi, other.lo), lo * other.lo)
 
     /**
      * Truncated division (rounds toward zero), matching Kotlin's `/` on [Int]/[Long].

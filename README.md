@@ -32,7 +32,7 @@ dependencies {
 
 ## Performance: how close to C?
 
-Every number below comes from `./benchmark/run-benchmarks.sh`, which compiles a C `__int128` benchmark (`gcc -O2`) and an equivalent Kotlin JVM benchmark, runs both, and prints side-by-side comparison tables.
+Every number below comes from `./benchmark/run-benchmarks.sh`, which compiles a C `__int128` benchmark (`gcc -O2`) and equivalent Kotlin JVM and Kotlin/Native benchmarks, runs all three, and prints side-by-side comparison tables. The JVM tables are first; [Kotlin/Native](#kotlinnative-multiply-high-matches-c) has its own section.
 
 ### The raw arithmetic is within 1.2-2.7x of C
 
@@ -65,7 +65,7 @@ These numbers isolate instruction cost by using raw `Long` pairs — no `Int128`
 | div by 7 | ~10 ns | ~60-500 ns | 6-50x |
 | div by large | ~3 ns | ~25-50 ns | 8-16x |
 
-C uses the compiler's optimized `__divti3` runtime. JVM Kotlin uses a pure-Kotlin O(128) bit-at-a-time loop (no `__int128` available on the JVM). On native targets, division goes through cinterop to `__divti3` and matches C.
+C uses the compiler's optimized `__divti3` runtime. JVM Kotlin uses a pure-Kotlin O(128) bit-at-a-time loop (no `__int128` available on the JVM). On native targets, division is one `__divti3` call like C, plus the result allocations (see below).
 
 ### What MFVC will change
 
@@ -78,17 +78,39 @@ When Kotlin multi-field value classes stabilize, `Int128(hi, lo)` erases to two 
 | shift | 6-7 ns | ~2.2 ns | 1.7 ns |
 | compare | 3-4 ns | ~1.3 ns | 0.7 ns |
 
+### Kotlin/Native: multiply-high matches C
+
+On native, the arithmetic is the same machine code as C: multiply-high is a single `mul` (x86-64) / `umulh` (ARM64) inlined into the Kotlin caller, and division is one `__divti3` call. Median of 5 runs, `linuxX64` release binary, same machine as the C column:
+
+| Operation | C `__int128` | Before (cinterop) | Now (`@GCUnsafeCall`) | Speedup |
+|-----------|-------------|-------------------|----------------------|---------|
+| mul-high (raw Longs) | 0.64 ns | 1.87 ns¹ | **0.63 ns** | 3.0x |
+| `Int128` multiply-add | 1.88 ns² | 80.7 ns | 23.2 ns | 3.5x |
+| `Int128` div by 7 | 8.4 ns | 123.9 ns | 57.1 ns | 2.2x |
+| `Int128` div by large | 2.3 ns | 114.9 ns | 40.4 ns | 2.8x |
+| `Int128` mixed | 1.6 ns | 80.6 ns | 25.6 ns | 3.1x |
+| `Int128Array` multiply | — | 101.7 ns | 35.9 ns | 2.8x |
+
+¹ No public multiply-high existed before; this is the pure-Kotlin 4-multiply fallback a caller had to write. ² C's `mul` row, the same multiply-add loop.
+
+**How.** A normal cinterop call switches the thread's GC state to "native" and back around the C function: two atomic exchanges, ~11 ns, six times the cost of the multiply. The library instead binds its C helpers with `@GCUnsafeCall`, the annotation the Kotlin/Native stdlib uses for its own small runtime functions, which calls the symbol directly. The cinterop C code is linked into the program as LLVM bitcode, so LLVM then inlines it. For that to happen on ARM64, `int128.def` compiles the C helpers for the same CPU the backend uses for Kotlin code: LLVM refuses to inline across mismatched CPU feature sets. `verify-instructions.sh` checks all of this in the linked binary.
+
+**What is left is allocation.** Each `Int128` result is a heap object, and a Kotlin/Native allocation costs ~11 ns here, against ~3 ns on the JVM. `Int128` add is 12 ns for 0.16 ns of arithmetic; multiply-add is two allocations. A compiler fork would not change this. Multi-field value classes would, or an allocation-free API over raw `Long`s.
+
+`GCUnsafeCall` is a Kotlin/Native internal API (opt-in `kotlin.native.internal.InternalForKotlinNative`, set in `long128-core/build.gradle.kts`). It is safe only for short, non-blocking C functions that never call back into Kotlin, which is all these helpers do. A klib carries the annotation and the consumer's compiler lowers it, so a future Kotlin release that changes it affects apps using the library at link time. [KT-85635](https://youtrack.jetbrains.com/issue/KT-85635) asks for a supported intrinsic.
+
 ### Running the benchmark
 
 ```bash
-./benchmark/run-benchmarks.sh    # Builds C + Kotlin, runs both, prints comparison
+./benchmark/run-benchmarks.sh    # Builds C + JVM + Native (host target), runs all, prints comparison
 
 # Or separately:
 gcc -O2 -o /tmp/bench benchmark/benchmark_c.c && /tmp/bench
 ./gradlew -q :benchmark:jvmRun
+./gradlew -q :benchmark:runReleaseExecutableLinuxX64   # or MacosArm64 / MacosX64 / LinuxArm64
 ```
 
-The script prints three tables: instruction cost (C vs scalar Kotlin), allocation cost (scalar vs Int128), and the full four-way comparison. The Kotlin benchmark warms up HotSpot C2 with 3 rounds before measuring. The C benchmark uses a `volatile` sink to prevent dead code elimination.
+The script prints four tables: instruction cost (C vs scalar Kotlin), allocation cost (scalar vs Int128), the full four-way JVM comparison, and the same four-way comparison for Kotlin/Native. `SKIP_NATIVE=1` skips the native build. The Kotlin benchmark warms up HotSpot C2 with 3 rounds before measuring. The C benchmark uses a `volatile` sink to prevent dead code elimination.
 
 ## How it works
 
@@ -104,17 +126,17 @@ Expensive operations (multiply, divide) go through `expect`/`actual` functions i
 
 **JVM** (requires JDK 17+) — `PlatformIntrinsics.jvm.kt` resolves `Math.multiplyHigh` and `Math.unsignedMultiplyHigh` (JDK 18+) via `MethodHandle` at class-load time. MethodHandle is used instead of `invokestatic` because Android's D8 desugarer replaces direct `Math.multiplyHigh` calls with a software fallback when the app's `minSdk < 31`. HotSpot C2 inlines constant MethodHandle fields, so desktop JVM pays no penalty. Division falls back to a pure-Kotlin O(128) loop since `__int128` is unavailable on the JVM.
 
-**Native** — `PlatformIntrinsics.native.kt` delegates to C functions compiled from `__int128` via cinterop (`int128.def`). Clang generates optimal instructions per architecture:
+**Native** — `PlatformIntrinsics.native.kt` binds C functions compiled from `__int128` (`int128.def`) with `@GCUnsafeCall`, so there is no cinterop GC state switch and LLVM inlines the C body into the Kotlin caller (see [Kotlin/Native](#kotlinnative-multiply-high-matches-c)). In the linked binary:
 
 | Operation | x86-64 | ARM64 |
 |-----------|--------|-------|
-| multiply-high | `mul rsi` (1 insn) | `umulh` (1 insn) |
-| full 128×128 mul | 5 straight-line insns | 4 straight-line insns |
+| multiply-high | `mul` (1 insn, inline) | `umulh` (1 insn, inline) |
+| full 128×128 mul | `mul` + 2 `imul` + 2 `add` | `umulh` + 2 `madd` + `mul` |
 | add | `add`+`adc` | `adds`+`adc` |
 | subtract | `sub`+`sbb` | `subs`+`sbc` |
-| divide | `call __divti3` | `call __divti3` |
+| divide + remainder | one `call __divti3` | one `call __divti3` |
 
-Add and subtract stay in pure Kotlin on native too — the carry detection pattern `(result.toULong() < operand.toULong())` compiles to the same `add`+`adc` / `adds`+`adc` as the C version (verified via objdump), and avoiding cinterop saves ~15ns of call overhead per operation.
+The full multiply is Kotlin code (`multiply128High`) on top of the multiply-high, shared by every platform. Division asks C for each 64-bit word of the quotient and remainder separately so every result comes back in a register; after inlining, LLVM merges the four into one `__divti3` call. Add and subtract are pure Kotlin: the carry detection pattern `(result.toULong() < operand.toULong())` compiles to the same `add`+`adc` / `adds`+`adc` as C.
 
 **Android** — Same JVM implementation. On API 31+, MethodHandle resolves `Math.multiplyHigh` and ART intrinsifies it to `SMULH` on ARM64. On API <31, falls back to Karatsuba (4-multiply decomposition). `Math.unsignedMultiplyHigh` was never added to Android, so we use the signed-to-unsigned correction on all API levels.
 
@@ -126,15 +148,16 @@ long128-core/src/
 │   ├── Int128.kt                     # Signed 128-bit integer
 │   ├── UInt128.kt                    # Unsigned 128-bit integer
 │   ├── Int128Array.kt                # Flat LongArray-backed arrays
+│   ├── MultiplyHigh.kt               # Public multiplyHigh / unsignedMultiplyHigh
 │   └── internal/
-│       ├── PlatformIntrinsics.kt     # expect: multiply128, signedDivide128, ...
+│       ├── PlatformIntrinsics.kt     # expect: unsignedMultiplyHigh, signedDivide128, ...
 │       └── SoftwareArithmetic.kt     # Pure-Kotlin: division, toString, parsing
 ├── jvmMain/.../internal/
 │   └── PlatformIntrinsics.jvm.kt     # actual: MethodHandle → Math.multiplyHigh
 ├── nativeMain/.../internal/
-│   └── PlatformIntrinsics.native.kt  # actual: cinterop → __int128
+│   └── PlatformIntrinsics.native.kt  # actual: @GCUnsafeCall → __int128, inlined
 └── nativeInterop/cinterop/
-    └── int128.def                    # C: __int128 mul, div, add, sub, compare
+    └── int128.def                    # C: __int128 multiply-high, div/rem, reference helpers
 ```
 
 ## API
@@ -174,6 +197,18 @@ fun Long.toInt128(): Int128
 fun String.toInt128(radix: Int = 10): Int128
 ```
 
+### Multiply-high
+
+The upper 64 bits of a 64×64-bit product, one instruction on every target: the building block for bignum, elliptic-curve field and hash arithmetic. Same contracts as `java.lang.Math`.
+
+```kotlin
+fun multiplyHigh(x: Long, y: Long): Long            // signed:   imul / smulh
+fun unsignedMultiplyHigh(x: Long, y: Long): Long    // unsigned: mul  / umulh
+fun ULong.multiplyHigh(other: ULong): ULong
+```
+
+On Kotlin/Native these inline into the caller's code across module boundaries, so a hot loop in your module gets a bare `mul` / `umulh`.
+
 ### UInt128
 
 Same API with unsigned semantics. `shr` is always logical (zero-fill). No `unaryMinus`.
@@ -193,13 +228,13 @@ for (elem in arr) { /* ... */ }
 Every claim in this README is machine-verified:
 
 ```bash
-./gradlew :long128-core:jvmTest   # 187 tests
-./verify-instructions.sh           # 19 instruction checks
+./gradlew :long128-core:jvmTest   # 281 tests (248 on linuxX64Test)
+./verify-instructions.sh           # 27 instruction checks with both Linux benchmark binaries built
 ```
 
 | What | How | Result |
 |------|-----|--------|
-| Arithmetic correctness | BigInteger oracle (java.math + ionspin/bignum), 500+ value pairs per op, all platforms | 187 tests pass |
+| Arithmetic correctness | BigInteger oracle (java.math + ionspin/bignum), 500+ value pairs per op, all platforms | 281 JVM / 248 native tests pass |
 | `Math.multiplyHigh` used | Bytecode inspection of compiled `.class` | Constant pool contains MethodHandle + `multiplyHigh` |
 | No boxing | Bytecode inspection | No `Long.valueOf` in Int128.class |
 | No BigInteger dependency | Bytecode + class file scan | Zero references |
@@ -208,6 +243,9 @@ Every claim in this README is machine-verified:
 | ARM64 `umulh` | `clang --target=aarch64` cross-compile + inspect `.s` | `umulh` (1 insn) |
 | ARM64 `adds`+`adc` | Same cross-compile | Carry flag, no branch |
 | Kotlin carry pattern → `adc` | Compile equivalent C pattern, compare objdump | Identical output |
+| Native multiply-high inlined | Disassemble the linked benchmark binary (x86-64 and ARM64) | Bare `mul` / `umulh` in Kotlin code, incl. a loop in another module |
+| No GC state switch | Same binary: atomic exchange within 16 insns of a multiply-high, cinterop bridge calls | None (the pre-`@GCUnsafeCall` binary fails this check) |
+| One division call | Same binary: `__modti3` / `__umodti3` calls | None: remainder derived from the one `__divti3` |
 
 ## Building
 
@@ -218,7 +256,7 @@ Requires JDK 17 or newer. CI runs the JVM test suite against JDK 17 and 21.
 ./gradlew :long128-core:linuxX64Test     # Linux native tests
 ./gradlew :long128-core:macosArm64Test   # macOS ARM64 tests
 ./verify-instructions.sh                  # Instruction verification
-./benchmark/run-benchmarks.sh             # C vs Kotlin benchmark
+./benchmark/run-benchmarks.sh             # C vs Kotlin JVM vs Kotlin/Native benchmark
 ```
 
 ## Publishing
@@ -238,7 +276,8 @@ Requires JDK 17 or newer. CI runs the JVM test suite against JDK 17 and 21.
 | Division is 6-50x slower than C on JVM | No `__int128` on JVM; uses O(128) Kotlin loop | On native, cinterop uses `__divti3` (matches C) |
 | Android API <31: no hardware multiply | `Math.multiplyHigh` absent | Karatsuba fallback (3-8x faster than BigInteger) |
 | Android: no `unsignedMultiplyHigh` | Never added to Android SDK | Signed + 3-insn correction |
-| Native cinterop: ~15ns call overhead | Kotlin/Native GC safepoint | Batch APIs for arrays; add/sub stay in pure Kotlin |
+| Native: ~11 ns per `Int128` allocation | Kotlin/Native allocator + GC; arithmetic itself matches C | Keep hot loops on raw `Long`s with `unsignedMultiplyHigh` |
+| Native relies on `GCUnsafeCall` | Kotlin/Native internal API; no public intrinsic yet ([KT-85635](https://youtrack.jetbrains.com/issue/KT-85635)) | CI builds and checks the linked binary |
 
 ## License
 

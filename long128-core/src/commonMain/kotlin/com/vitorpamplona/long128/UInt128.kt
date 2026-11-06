@@ -43,10 +43,8 @@ class UInt128(val hi: Long, val lo: Long) : Comparable<UInt128> {
         return UInt128(hi - other.hi - borrow, resultLo)
     }
 
-    operator fun times(other: UInt128): UInt128 {
-        val result = multiply128(hi, lo, other.hi, other.lo)
-        return UInt128(result[0], result[1])
-    }
+    operator fun times(other: UInt128): UInt128 =
+        UInt128(multiply128High(hi, lo, other.hi, other.lo), lo * other.lo)
 
     /** Unsigned division. @throws ArithmeticException if [other] is zero. */
     operator fun div(other: UInt128): UInt128 {

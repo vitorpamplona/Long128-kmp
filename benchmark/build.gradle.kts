@@ -15,8 +15,21 @@ kotlin {
         }
     }
 
+    // Native benchmark executables. run-benchmarks.sh runs the one matching the host:
+    //   ./gradlew -q :benchmark:runReleaseExecutableLinuxX64
+    linuxX64()
+    linuxArm64()
+    macosArm64()
+    macosX64()
+
+    targets.withType<org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget> {
+        binaries.executable {
+            entryPoint = "com.vitorpamplona.long128.benchmark.main"
+        }
+    }
+
     sourceSets {
-        jvmMain.dependencies {
+        commonMain.dependencies {
             implementation(project(":long128-core"))
         }
     }

@@ -62,7 +62,7 @@ internal fun signedMultiplyHighFallback(x: Long, y: Long): Long {
     return highProduct + (crossSum shr 32) + (crossAdjusted shr 32)
 }
 
-private fun signedMultiplyHigh(x: Long, y: Long): Long {
+internal actual fun signedMultiplyHigh(x: Long, y: Long): Long {
     val mh = SIGNED_MULTIPLY_HIGH
     return if (mh != null) mh.invokeExact(x, y) as Long else signedMultiplyHighFallback(x, y)
 }
@@ -81,14 +81,6 @@ internal actual fun unsignedMultiplyHigh(x: Long, y: Long): Long {
     // and 0 when y is non-negative (shr 63 = all 0s).
     val signed = signedMultiplyHigh(x, y)
     return signed + (x and (y shr 63)) + (y and (x shr 63))
-}
-
-internal actual fun multiply128(aHi: Long, aLo: Long, bHi: Long, bLo: Long): LongArray {
-    // (aHi*2^64 + aLo) * (bHi*2^64 + bLo)  mod 2^128
-    // = aLo*bLo + (aHi*bLo + aLo*bHi)*2^64  (the aHi*bHi*2^128 term overflows and is dropped)
-    val resultLo = aLo * bLo
-    val resultHi = unsignedMultiplyHigh(aLo, bLo) + aHi * bLo + aLo * bHi
-    return longArrayOf(resultHi, resultLo)
 }
 
 internal actual fun unsignedDivide128(

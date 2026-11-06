@@ -48,6 +48,12 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Run linuxX64 tests
         run: ./gradlew :long128-core:linuxX64Test
+      # Disassemble the linked release binaries (x86-64 native + ARM64 cross-compiled):
+      # multiply-high must be an inline mul/umulh with no GC thread-state switch.
+      - name: Build native benchmark binaries
+        run: ./gradlew :benchmark:linkReleaseExecutableLinuxX64 :benchmark:linkReleaseExecutableLinuxArm64
+      - name: Verify instructions (linked Kotlin/Native binaries)
+        run: ./verify-instructions.sh --native-only
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -62,9 +68,11 @@ jobs:
         include:
           - os: macos-14       # ARM64 (M1)
             target: macosArm64Test
+            bench: MacosArm64
             needs-rosetta: false
           - os: macos-14       # x64 via Rosetta 2 (macos-13 was retired Dec 2025)
             target: macosX64Test
+            bench: MacosX64
             needs-rosetta: true
     runs-on: ${{ matrix.os }}
     steps:
@@ -79,6 +87,10 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Run ${{ matrix.target }}
         run: ./gradlew :long128-core:${{ matrix.target }}
+      - name: Build native benchmark binary
+        run: ./gradlew :benchmark:linkReleaseExecutable${{ matrix.bench }}
+      - name: Verify instructions (linked Kotlin/Native binary)
+        run: ./verify-instructions.sh --native-only
 
   # ── Windows (mingwX64) ────────────────────────────────────────────
   test-windows:
@@ -105,5 +117,5 @@ jobs:
           distribution: temurin
           java-version: 21
       - uses: gradle/actions/setup-gradle@v4
-      - name: Run C vs Kotlin benchmark
+      - name: Run C vs Kotlin JVM vs Kotlin/Native benchmark
         run: ./benchmark/run-benchmarks.sh

@@ -24,6 +24,15 @@ kotlin {
     mingwX64()
 
     targets.withType<org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget> {
+        compilations.configureEach {
+            compileTaskProvider.configure {
+                compilerOptions {
+                    // kotlin.native.internal.GCUnsafeCall (see PlatformIntrinsics.native.kt).
+                    // The marker annotation is not visible to user code, so opt in here.
+                    optIn.add("kotlin.native.internal.InternalForKotlinNative")
+                }
+            }
+        }
         compilations.getByName("main") {
             cinterops {
                 create("int128") {

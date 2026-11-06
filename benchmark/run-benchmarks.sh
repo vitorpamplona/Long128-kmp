@@ -1,9 +1,11 @@
 #!/bin/bash
-# run-benchmarks.sh — Run C and Kotlin benchmarks, print side-by-side comparison.
+# run-benchmarks.sh — Run C, Kotlin/JVM and Kotlin/Native benchmarks, print side-by-side comparison.
 #
-# Usage: ./benchmark/run-benchmarks.sh
+# Usage: ./benchmark/run-benchmarks.sh            # C + JVM + Native (host target)
+#        SKIP_NATIVE=1 ./benchmark/run-benchmarks.sh
 #
-# Requires: gcc, java, gradle wrapper (./gradlew)
+# Requires: gcc, java, gradle wrapper (./gradlew). The native step builds the release
+# benchmark executable for the host (linuxX64, linuxArm64, macosArm64 or macosX64).
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -12,14 +14,14 @@ JDK_VER=$(java -version 2>&1 | awk -F'"' '/version/ {print $2; exit}')
 [ -z "$JDK_VER" ] && JDK_VER="unknown"
 
 echo "══════════════════════════════════════════════════════════════════"
-echo " Long128-kmp: C vs Kotlin JVM Benchmark"
+echo " Long128-kmp: C vs Kotlin JVM vs Kotlin/Native Benchmark"
 echo " $(uname -m) / $(uname -s) / JDK $JDK_VER"
 echo "══════════════════════════════════════════════════════════════════"
 echo ""
 
 # ── 1. C reference ───────────────────────────────────────────────────
 
-echo "[1/2] C __int128 (gcc -O2) — performance floor"
+echo "[1/3] C __int128 (gcc -O2) — performance floor"
 echo ""
 gcc -O2 -o /tmp/long128_bench_c benchmark/benchmark_c.c 2>/dev/null
 C_RAW=$(/tmp/long128_bench_c)
@@ -28,13 +30,38 @@ echo ""
 
 # ── 2. Kotlin JVM ────────────────────────────────────────────────────
 
-echo "[2/2] Kotlin Int128 (JVM, JDK $JDK_VER)"
+echo "[2/3] Kotlin Int128 (JVM, JDK $JDK_VER)"
 echo ""
 KT_RAW=$(./gradlew -q :benchmark:jvmRun 2>/dev/null | grep -v "^Picked up JAVA")
 echo "$KT_RAW"
 echo ""
 
-# ── 3. Parse results ─────────────────────────────────────────────────
+# ── 3. Kotlin/Native (host target) ───────────────────────────────────
+
+case "$(uname -s)/$(uname -m)" in
+    Linux/x86_64)   KN_TARGET=LinuxX64 ;;
+    Linux/aarch64)  KN_TARGET=LinuxArm64 ;;
+    Darwin/arm64)   KN_TARGET=MacosArm64 ;;
+    Darwin/x86_64)  KN_TARGET=MacosX64 ;;
+    *)              KN_TARGET="" ;;
+esac
+KN_RAW=""
+if [ -n "${SKIP_NATIVE:-}" ] || [ -z "$KN_TARGET" ]; then
+    echo "[3/3] Kotlin/Native — skipped"
+else
+    echo "[3/3] Kotlin Int128 (Kotlin/Native, $KN_TARGET release)"
+    echo ""
+    KN_DIR="$(printf '%s' "$KN_TARGET" | awk '{print tolower(substr($0,1,1)) substr($0,2)}')"
+    if ./gradlew -q ":benchmark:linkReleaseExecutable$KN_TARGET" >/dev/null 2>&1; then
+        KN_RAW=$("benchmark/build/bin/$KN_DIR/releaseExecutable/benchmark.kexe")
+        echo "$KN_RAW"
+    else
+        echo "  native build failed: ./gradlew :benchmark:linkReleaseExecutable$KN_TARGET"
+    fi
+fi
+echo ""
+
+# ── 4. Parse results ─────────────────────────────────────────────────
 
 parse_ns() {
     # Extract "label: 123.45 ns/op" → variables named <prefix>_<label>
@@ -56,6 +83,7 @@ parse_ns() {
 
 # Look up a parsed value: get_val <prefix> <key>, prints "—" if unset.
 get_val() {
+    [ "$2" = "-" ] && { printf '%s' "—"; return; }
     local var="$1_$2"
     eval "printf '%s' \"\${$var:-—}\""
 }
@@ -65,8 +93,9 @@ parse_ns C "$C_RAW"
 parse_ns KT_SCALAR "$KT_RAW"
 parse_ns KT_INT128 "$KT_RAW"
 parse_ns KT_ARRAY "$KT_RAW"
+parse_ns KN "$KN_RAW"
 
-# ── 4. Comparison tables ─────────────────────────────────────────────
+# ── 5. Comparison tables ─────────────────────────────────────────────
 
 ratio() {
     local c=$1 kt=$2
@@ -165,6 +194,34 @@ c_val=$(get_val C c_mixed)
 i_val=$(get_val KT_INT128 int128_mixed)
 r=$(ratio "$c_val" "$i_val")
 printf "  %-14s %6s   %6s   %6s   %6s   %sx\n" "mixed" "$c_val" "—" "$i_val" "—" "$r"
+
+if [ -n "$KN_RAW" ]; then
+    echo ""
+    echo "══════════════════════════════════════════════════════════════════"
+    echo " KOTLIN/NATIVE ($KN_TARGET): C vs Scalar vs Int128 vs Int128Array"
+    echo "══════════════════════════════════════════════════════════════════"
+    printf "  %-14s %8s %8s %8s %8s %8s\n" "Operation" "C" "Scalar" "Int128" "Array" "C→Int128"
+    echo "  ──────────────────────────────────────────────────────────────"
+    for pair in \
+        "add:c_add:scalar_add:int128_add:array_add" \
+        "sub:c_sub:scalar_sub:int128_sub:-" \
+        "multiply:c_mul:scalar_mul:int128_mul:array_mul" \
+        "mul high:c_mul_high:scalar_mul_high:-:-" \
+        "shift:c_shift:scalar_shift:int128_shift:-" \
+        "compare:c_compare:scalar_compare:int128_compare:-" \
+        "div (small):c_div_by_small:-:int128_div_sm:-" \
+        "div (large):c_div_by_large:-:int128_div_lg:-" \
+        "mixed:c_mixed:-:int128_mixed:-"
+    do
+        IFS=: read -r label c_key s_key i_key a_key <<< "$pair"
+        c_val=$(get_val C "$c_key")
+        s_val=$(get_val KN "$s_key")
+        i_val=$(get_val KN "$i_key")
+        a_val=$(get_val KN "$a_key")
+        if [ "$i_key" = "-" ]; then r=$(ratio "$c_val" "$s_val"); else r=$(ratio "$c_val" "$i_val"); fi
+        printf "  %-14s %6s   %6s   %6s   %6s   %sx\n" "$label" "$c_val" "$s_val" "$i_val" "$a_val" "$r"
+    done
+fi
 
 echo ""
 echo "  Ratio = Kotlin ns / C ns  (1.0x = same speed)"
