@@ -1,5 +1,7 @@
 package com.vitorpamplona.long128.internal
 
+import com.vitorpamplona.long128.Int128
+import com.vitorpamplona.long128.UInt128
 import java.lang.invoke.MethodHandles
 import java.lang.invoke.MethodType
 
@@ -15,8 +17,8 @@ import java.lang.invoke.MethodType
  * On HotSpot (desktop JVM), C2 inlines constant MethodHandle fields, so there is
  * no performance penalty compared to a direct `invokestatic`.
  *
- * Division has no hardware shortcut on the JVM (no `__int128`), so it falls back
- * to the pure-Kotlin implementation in [SoftwareArithmetic].
+ * Division uses Knuth's algorithm D on 64-bit hardware division ([unsignedQuotient] / [unsignedRemainder] in
+ * SoftwareArithmetic.kt): the JVM has no 128-bit division instruction to call.
  */
 
 private val LONG_LONG_TO_LONG = MethodType.methodType(
@@ -62,12 +64,12 @@ internal fun signedMultiplyHighFallback(x: Long, y: Long): Long {
     return highProduct + (crossSum shr 32) + (crossAdjusted shr 32)
 }
 
-private fun signedMultiplyHigh(x: Long, y: Long): Long {
+internal actual fun signedMultiplyHigh(x: Long, y: Long): Long {
     val mh = SIGNED_MULTIPLY_HIGH
     return if (mh != null) mh.invokeExact(x, y) as Long else signedMultiplyHighFallback(x, y)
 }
 
-internal actual fun unsignedMultiplyHigh(x: Long, y: Long): Long {
+@PublishedApi internal actual fun unsignedMultiplyHigh(x: Long, y: Long): Long {
     // Tier 1: direct unsigned intrinsic (JDK 18+)
     val umh = UNSIGNED_MULTIPLY_HIGH
     if (umh != null) return umh.invokeExact(x, y) as Long
@@ -83,54 +85,50 @@ internal actual fun unsignedMultiplyHigh(x: Long, y: Long): Long {
     return signed + (x and (y shr 63)) + (y and (x shr 63))
 }
 
-internal actual fun multiply128(aHi: Long, aLo: Long, bHi: Long, bLo: Long): LongArray {
-    // (aHi*2^64 + aLo) * (bHi*2^64 + bLo)  mod 2^128
-    // = aLo*bLo + (aHi*bLo + aLo*bHi)*2^64  (the aHi*bHi*2^128 term overflows and is dropped)
-    val resultLo = aLo * bLo
-    val resultHi = unsignedMultiplyHigh(aLo, bLo) + aHi * bLo + aLo * bHi
-    return longArrayOf(resultHi, resultLo)
-}
+internal actual fun unsignedQuotient128(
+    dividendHi: Long, dividendLo: Long, divisorHi: Long, divisorLo: Long,
+): UInt128 = unsignedQuotient(dividendHi, dividendLo, divisorHi, divisorLo)
 
-internal actual fun unsignedDivide128(
-    dividendHi: Long, dividendLo: Long,
-    divisorHi: Long, divisorLo: Long,
-): LongArray = unsignedDivRem(dividendHi, dividendLo, divisorHi, divisorLo)
+internal actual fun unsignedRemainder128(
+    dividendHi: Long, dividendLo: Long, divisorHi: Long, divisorLo: Long,
+): UInt128 = unsignedRemainder(dividendHi, dividendLo, divisorHi, divisorLo)
 
-internal actual fun signedDivide128(
-    dividendHi: Long, dividendLo: Long,
-    divisorHi: Long, divisorLo: Long,
-): LongArray {
-    if (divisorHi == 0L && divisorLo == 0L) throw ArithmeticException("Division by zero")
+// Signed division divides the magnitudes, then fixes the signs: the quotient is
+// negative when the operand signs differ, and the remainder takes the dividend's
+// sign (truncated division, like Kotlin's `/` and `%` on Long).
+
+private fun absHi(hi: Long, lo: Long): Long = if (hi < 0) hi.inv() + (if (lo == 0L) 1L else 0L) else hi
+private fun absLo(hi: Long, lo: Long): Long = if (hi < 0) -lo else lo
+// One construction site (see the note above unsignedQuotient in SoftwareArithmetic.kt).
+private fun negate(x: UInt128, negative: Boolean): Int128 = Int128(
+    if (negative) x.hi.inv() + (if (x.lo == 0L) 1L else 0L) else x.hi,
+    if (negative) -x.lo else x.lo,
+)
+
+internal actual fun signedQuotient128(
+    dividendHi: Long, dividendLo: Long, divisorHi: Long, divisorLo: Long,
+): Int128 {
     if (dividendHi == Long.MIN_VALUE && dividendLo == 0L && divisorHi == -1L && divisorLo == -1L) {
         throw ArithmeticException("Int128 overflow: MIN_VALUE / -1")
     }
-
-    // Convert to unsigned absolute values, divide, then fix up signs.
-    // Negation is two's complement: ~x + 1.
-    val aNeg = dividendHi < 0
-    val bNeg = divisorHi < 0
-
-    val aAbsLo = if (aNeg) dividendLo.inv() + 1L else dividendLo
-    val aAbsHi = if (aNeg) dividendHi.inv() + (if (dividendLo == 0L) 1L else 0L) else dividendHi
-    val bAbsLo = if (bNeg) divisorLo.inv() + 1L else divisorLo
-    val bAbsHi = if (bNeg) divisorHi.inv() + (if (divisorLo == 0L) 1L else 0L) else divisorHi
-
-    val result = unsignedDivRem(aAbsHi, aAbsLo, bAbsHi, bAbsLo)
-    var qHi = result[0]; var qLo = result[1]
-    var rHi = result[2]; var rLo = result[3]
-
-    // Quotient is negative when operand signs differ
-    if (aNeg != bNeg) {
-        val negLo = qLo.inv() + 1L
-        qHi = qHi.inv() + (if (qLo == 0L) 1L else 0L)
-        qLo = negLo
-    }
-    // Remainder takes the sign of the dividend (truncated division)
-    if (aNeg) {
-        val negLo = rLo.inv() + 1L
-        rHi = rHi.inv() + (if (rLo == 0L) 1L else 0L)
-        rLo = negLo
-    }
-
-    return longArrayOf(qHi, qLo, rHi, rLo)
+    val q = unsignedQuotient(
+        absHi(dividendHi, dividendLo), absLo(dividendHi, dividendLo),
+        absHi(divisorHi, divisorLo), absLo(divisorHi, divisorLo),
+    )
+    return negate(q, (dividendHi < 0) != (divisorHi < 0))
 }
+
+internal actual fun signedRemainder128(
+    dividendHi: Long, dividendLo: Long, divisorHi: Long, divisorLo: Long,
+): Int128 {
+    // MIN_VALUE % -1 == 0, as for Long (the quotient overflows, the remainder does not).
+    if (dividendHi == Long.MIN_VALUE && dividendLo == 0L && divisorHi == -1L && divisorLo == -1L) return Int128.ZERO
+    val r = unsignedRemainder(
+        absHi(dividendHi, dividendLo), absLo(dividendHi, dividendLo),
+        absHi(divisorHi, divisorLo), absLo(divisorHi, divisorLo),
+    )
+    return negate(r, dividendHi < 0)
+}
+
+internal actual fun divideUnsigned64(dividend: Long, divisor: Long): Long =
+    java.lang.Long.divideUnsigned(dividend, divisor)

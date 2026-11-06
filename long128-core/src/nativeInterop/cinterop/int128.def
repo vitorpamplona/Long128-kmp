@@ -1,5 +1,20 @@
 package = int128ops
 
+# Compile the C helpers for the same CPU the Kotlin/Native backend uses for Kotlin code
+# (targetCpu.<target> in the distribution's konan/konan.properties). LLVM only inlines a
+# function into a caller whose CPU features are a superset of its own; clang's default
+# "generic" AArch64 CPU carries tuning features cortex-a57 lacks, which blocked inlining
+# on linuxArm64 and turned every multiply-high into a call. verify-instructions.sh checks
+# the linked binary. Apple CPUs are pinned too, so an SDK default change cannot regress it.
+compilerOpts.linux_x64 = -march=x86-64
+compilerOpts.mingw_x64 = -march=x86-64
+compilerOpts.linux_arm64 = -mcpu=cortex-a57
+compilerOpts.macos_x64 = -march=penryn
+compilerOpts.ios_x64 = -march=core2
+compilerOpts.macos_arm64 = -mcpu=apple-m1
+compilerOpts.ios_simulator_arm64 = -mcpu=apple-m1
+compilerOpts.ios_arm64 = -mcpu=apple-a7
+
 ---
 #include <stdint.h>
 
@@ -15,6 +30,20 @@ package = int128ops
  * Single int64_t return values use the standard return register (RAX/x0).
  */
 
+/* ── 128-bit register value (Kotlin's Vector128) ──────────────────
+ * Int128/UInt128 are value classes over Kotlin/Native's Vector128, a 16-byte
+ * value type that lives in a SIMD register. Kotlin can only build one from four
+ * ints; this builds it from two 64-bit words. Lane 0 = low word, lane 1 = high
+ * word. The return type matches Vector128's LLVM type (<4 x i32>) exactly. */
+
+typedef int32_t int128_v4si __attribute__((vector_size(16)));
+typedef int64_t int128_v2di __attribute__((vector_size(16)));
+
+int128_v4si int128_bits(int64_t hi, int64_t lo) {
+    int128_v2di v = { lo, hi };
+    return (int128_v4si)v;
+}
+
 /* ── Multiply-high (single int64_t return, ABI-portable) ──────── */
 
 /* Signed: high 64 bits of (signed64 × signed64) */
@@ -29,43 +58,62 @@ int64_t int128_multiply_high_unsigned(int64_t a, int64_t b) {
     return (int64_t)(result >> 64);
 }
 
-/* ── Full 128-bit operations (out parameters) ─────────────────── */
+/* ── Division (one int64_t word per function, ABI-portable) ───── */
+
+/*
+ * Each function returns ONE 64-bit word of a quotient or remainder, so every
+ * result travels in the return register on every ABI — no out-pointers and
+ * no struct returns.
+ *
+ * Kotlin calls these through @GCUnsafeCall (see PlatformIntrinsics.native.kt).
+ * The Kotlin/Native backend links this C code into the program as LLVM bitcode,
+ * so the bodies inline into the Kotlin caller. When the caller asks for the
+ * quotient hi/lo and remainder hi/lo of the same operands, LLVM merges the
+ * identical `udiv i128` / `sdiv i128` nodes into one, and its DivRemPairs pass
+ * derives the remainder from the quotient: one __udivti3 / __divti3 call total.
+ *
+ * Callers must check for a zero divisor (and signed MIN / -1) first.
+ */
+
+#define U128(hi, lo) (((unsigned __int128)(uint64_t)(hi) << 64) | (uint64_t)(lo))
+#define S128(hi, lo) ((__int128)U128(hi, lo))
+
+int64_t uint128_udiv_hi(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+    return (int64_t)((U128(a_hi, a_lo) / U128(b_hi, b_lo)) >> 64);
+}
+int64_t uint128_udiv_lo(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+    return (int64_t)(U128(a_hi, a_lo) / U128(b_hi, b_lo));
+}
+int64_t uint128_urem_hi(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+    return (int64_t)((U128(a_hi, a_lo) % U128(b_hi, b_lo)) >> 64);
+}
+int64_t uint128_urem_lo(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+    return (int64_t)(U128(a_hi, a_lo) % U128(b_hi, b_lo));
+}
+
+int64_t int128_sdiv_hi(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+    return (int64_t)((S128(a_hi, a_lo) / S128(b_hi, b_lo)) >> 64);
+}
+int64_t int128_sdiv_lo(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+    return (int64_t)(S128(a_hi, a_lo) / S128(b_hi, b_lo));
+}
+int64_t int128_srem_hi(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+    return (int64_t)((S128(a_hi, a_lo) % S128(b_hi, b_lo)) >> 64);
+}
+int64_t int128_srem_lo(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo) {
+    return (int64_t)(S128(a_hi, a_lo) % S128(b_hi, b_lo));
+}
+
+/* ── Full 128-bit multiply (out parameters) ──────────────────────
+ * Not called from Kotlin: Int128.times is Kotlin code built on
+ * int128_multiply_high_unsigned. Kept as the reference that
+ * verify-instructions.sh disassembles. */
 
 void int128_mul(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo,
                 int64_t* out_hi, int64_t* out_lo) {
-    unsigned __int128 a = ((unsigned __int128)(uint64_t)a_hi << 64) | (uint64_t)a_lo;
-    unsigned __int128 b = ((unsigned __int128)(uint64_t)b_hi << 64) | (uint64_t)b_lo;
-    unsigned __int128 r = a * b;
+    unsigned __int128 r = U128(a_hi, a_lo) * U128(b_hi, b_lo);
     *out_hi = (int64_t)(r >> 64);
     *out_lo = (int64_t)r;
-}
-
-/* Signed 128÷128 div + rem. Caller must ensure b != 0 and not (a==MIN && b==-1). */
-void int128_sdivrem(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo,
-                    int64_t* q_hi, int64_t* q_lo,
-                    int64_t* r_hi, int64_t* r_lo) {
-    __int128 a = ((__int128)a_hi << 64) | (uint64_t)a_lo;
-    __int128 b = ((__int128)b_hi << 64) | (uint64_t)b_lo;
-    __int128 q = a / b;
-    __int128 r = a % b;
-    *q_hi = (int64_t)(q >> 64);
-    *q_lo = (int64_t)q;
-    *r_hi = (int64_t)(r >> 64);
-    *r_lo = (int64_t)r;
-}
-
-/* Unsigned 128÷128 div + rem. Caller must ensure b != 0. */
-void uint128_udivrem(int64_t a_hi, int64_t a_lo, int64_t b_hi, int64_t b_lo,
-                     int64_t* q_hi, int64_t* q_lo,
-                     int64_t* r_hi, int64_t* r_lo) {
-    unsigned __int128 a = ((unsigned __int128)(uint64_t)a_hi << 64) | (uint64_t)a_lo;
-    unsigned __int128 b = ((unsigned __int128)(uint64_t)b_hi << 64) | (uint64_t)b_lo;
-    unsigned __int128 q = a / b;
-    unsigned __int128 r = a % b;
-    *q_hi = (int64_t)(q >> 64);
-    *q_lo = (int64_t)q;
-    *r_hi = (int64_t)(r >> 64);
-    *r_lo = (int64_t)r;
 }
 
 /* ── Add / Sub / Neg (out parameters) ─────────────────────────── */

@@ -5,7 +5,7 @@ import kotlin.random.Random
 import kotlin.test.*
 
 /**
- * Verifies that platform-specific optimized paths (multiply128,
+ * Verifies that platform-specific optimized paths (multiply128High,
  * signedDivide128, unsignedDivide128) produce identical results
  * to a BigInteger oracle on every platform.
  *

@@ -346,11 +346,11 @@ private fun signedUnsignedInterop() {
 private fun int128ArrayExamples() {
     // `int128ArrayOf` is the convenience factory; the underlying storage is a
     // flat LongArray of size `2 * n`, so this is a single allocation.
-    val arr = int128ArrayOf(
+    val arr = int128ArrayOf(listOf(
         Int128.fromLong(10L),
         Int128.fromLong(20L),
         Int128.fromLong(30L),
-    )
+    ))
     show("arr",      arr)
     show("arr.size", arr.size)
     show("arr[0]",   arr[0])
@@ -375,7 +375,7 @@ private fun int128ArrayExamples() {
 // ─── Section 17 ───────────────────────────────────────────────────────────────
 
 private fun uint128ArrayExamples() {
-    val arr = uint128ArrayOf(UInt128.ONE, UInt128.fromLong(2L), UInt128.fromLong(3L))
+    val arr = uint128ArrayOf(listOf(UInt128.ONE, UInt128.fromLong(2L), UInt128.fromLong(3L)))
     show("uint arr", arr)
 
     // Reduce style: multiply them together.

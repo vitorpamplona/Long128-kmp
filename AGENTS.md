@@ -10,6 +10,7 @@ target. Published to Maven Central; see `README.md`.
 ./gradlew :long128-core:linuxX64Test      # macOS: macosArm64Test / macosX64Test
 ./verify-instructions.sh                  # proves the README's claims about CPU instruction use (needs gcc, objdump, javap)
 ./benchmark/run-benchmarks.sh
+./gradlew :benchmark-jmh:jvmBenchmark     # JMH (JVM): the loops of benchmark/benchmark_c.c; jvmQuickBenchmark for a short run
 ```
 
 ## Remotes and pull requests

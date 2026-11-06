@@ -24,6 +24,15 @@ kotlin {
     mingwX64()
 
     targets.withType<org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget> {
+        compilations.configureEach {
+            compileTaskProvider.configure {
+                compilerOptions {
+                    // kotlin.native.internal.GCUnsafeCall (see PlatformIntrinsics.native.kt).
+                    // The marker annotation is not visible to user code, so opt in here.
+                    optIn.add("kotlin.native.internal.InternalForKotlinNative")
+                }
+            }
+        }
         compilations.getByName("main") {
             cinterops {
                 create("int128") {
@@ -31,6 +40,11 @@ kotlin {
                 }
             }
         }
+    }
+
+    compilerOptions {
+        // expect class Bits128 (internal/Bits128.kt): expect/actual classes are Beta.
+        freeCompilerArgs.add("-Xexpect-actual-classes")
     }
 
     sourceSets {

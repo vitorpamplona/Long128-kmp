@@ -1,6 +1,9 @@
+@file:Suppress("NOTHING_TO_INLINE")
+
 package com.vitorpamplona.long128
 
 import com.vitorpamplona.long128.internal.*
+import kotlin.jvm.JvmInline
 
 /**
  * A 128-bit unsigned integer.
@@ -26,8 +29,20 @@ import com.vitorpamplona.long128.internal.*
  *
  * All other operations (add, sub, mul, bitwise, shl) produce identical bit
  * patterns to [Int128] — wrapping arithmetic is sign-agnostic.
+ *
+ * Like [Int128], a value class over platform storage: never heap-allocated on
+ * native, one small object on the JVM. Compare with `==`, not `===`.
  */
-class UInt128(val hi: Long, val lo: Long) : Comparable<UInt128> {
+@JvmInline
+value class UInt128 @PublishedApi internal constructor(@PublishedApi internal val bits: Bits128) : Comparable<UInt128> {
+
+    constructor(hi: Long, lo: Long) : this(bits128(hi, lo))
+
+    /** Most-significant 64 bits (read as unsigned). */
+    inline val hi: Long get() = bits.hiWord()
+
+    /** Least-significant 64 bits (read as unsigned). */
+    inline val lo: Long get() = bits.loWord()
 
     // ── Arithmetic (wrapping mod 2^128) ──────────────────────────────
 
@@ -43,22 +58,14 @@ class UInt128(val hi: Long, val lo: Long) : Comparable<UInt128> {
         return UInt128(hi - other.hi - borrow, resultLo)
     }
 
-    operator fun times(other: UInt128): UInt128 {
-        val result = multiply128(hi, lo, other.hi, other.lo)
-        return UInt128(result[0], result[1])
-    }
+    inline operator fun times(other: UInt128): UInt128 =
+        UInt128(multiply128High(hi, lo, other.hi, other.lo), lo * other.lo)
 
     /** Unsigned division. @throws ArithmeticException if [other] is zero. */
-    operator fun div(other: UInt128): UInt128 {
-        val result = unsignedDivide128(hi, lo, other.hi, other.lo)
-        return UInt128(result[0], result[1])
-    }
+    operator fun div(other: UInt128): UInt128 = unsignedQuotient128(hi, lo, other.hi, other.lo)
 
     /** Unsigned remainder. @throws ArithmeticException if [other] is zero. */
-    operator fun rem(other: UInt128): UInt128 {
-        val result = unsignedDivide128(hi, lo, other.hi, other.lo)
-        return UInt128(result[2], result[3])
-    }
+    operator fun rem(other: UInt128): UInt128 = unsignedRemainder128(hi, lo, other.hi, other.lo)
 
     operator fun inc(): UInt128 = this + ONE
     operator fun dec(): UInt128 = this - ONE
@@ -73,21 +80,23 @@ class UInt128(val hi: Long, val lo: Long) : Comparable<UInt128> {
     /** Left shift. Shift amount masked to 0..127. */
     infix fun shl(bitCount: Int): UInt128 {
         val n = bitCount and 127
-        return when {
-            n == 0 -> this
-            n < 64 -> UInt128((hi shl n) or (lo ushr (64 - n)), lo shl n)
-            else -> UInt128(lo shl (n - 64), 0L)
-        }
+        // n == 0 must not reach the `64 - n` shifts (a shift by 64 is a shift by 0)
+        // One construction site so escape analysis can scalar-replace the result.
+        return UInt128(
+            if (n == 0) hi else if (n < 64) (hi shl n) or (lo ushr (64 - n)) else lo shl (n - 64),
+            if (n == 0) lo else if (n < 64) lo shl n else 0L,
+        )
     }
 
     /** Logical right shift (always zero-filling). Shift amount masked to 0..127. */
     infix fun shr(bitCount: Int): UInt128 {
         val n = bitCount and 127
-        return when {
-            n == 0 -> this
-            n < 64 -> UInt128(hi ushr n, (lo ushr n) or (hi shl (64 - n)))
-            else -> UInt128(0L, hi ushr (n - 64))
-        }
+        // n == 0 must not reach the `64 - n` shifts (a shift by 64 is a shift by 0)
+        // One construction site so escape analysis can scalar-replace the result.
+        return UInt128(
+            if (n == 0) hi else if (n < 64) hi ushr n else 0L,
+            if (n == 0) lo else if (n < 64) (lo ushr n) or (hi shl (64 - n)) else hi ushr (n - 64),
+        )
     }
 
     // ── Comparison (unsigned) ────────────────────────────────────────
@@ -99,11 +108,6 @@ class UInt128(val hi: Long, val lo: Long) : Comparable<UInt128> {
      */
     override operator fun compareTo(other: UInt128): Int =
         compareUnsigned128(hi, lo, other.hi, other.lo)
-
-    override fun equals(other: Any?): Boolean =
-        other is UInt128 && hi == other.hi && lo == other.lo
-
-    override fun hashCode(): Int = 31 * hi.hashCode() + lo.hashCode()
 
     // ── Conversions ──────────────────────────────────────────────────
 

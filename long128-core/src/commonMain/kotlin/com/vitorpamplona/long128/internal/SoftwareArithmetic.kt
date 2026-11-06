@@ -36,134 +36,176 @@ internal fun countLeadingZeros128(hi: Long, lo: Long): Int =
     if (hi != 0L) hi.countLeadingZeroBits() else 64 + lo.countLeadingZeroBits()
 
 // ─── Division ────────────────────────────────────────────────────────
+//
+// Knuth's algorithm D specialised to 128-bit operands, built on the hardware's
+// 64-bit unsigned division ([divideUnsigned64]: `Long.divideUnsigned` on the JVM,
+// an intrinsic `div` from JDK 19). It is the structure of libgcc's `__udivti3`,
+// except that x86 can divide 128 by 64 bits in one instruction and portable code
+// cannot, so the 128/64 step ([divide128By64]) is two 64/32-digit divisions with
+// Knuth's quotient-digit correction (Hacker's Delight §9.2 `divlu`; Go's
+// `math/bits.Div64` is the same routine).
+//
+// Native targets do not use this for `Int128`/`UInt128` division (they call
+// `__udivti3` directly); it backs the JVM and `toString` everywhere.
+
+private const val MASK32 = 0xFFFFFFFFL
+private const val TWO32 = 1L shl 32
+
+private fun ult(a: Long, b: Long): Boolean = (a xor Long.MIN_VALUE) < (b xor Long.MIN_VALUE)
+private fun ugt(a: Long, b: Long): Boolean = (a xor Long.MIN_VALUE) > (b xor Long.MIN_VALUE)
 
 /**
- * Unsigned 128-bit divided by 64-bit.
- *
- * This is the fast path used by [toString] (dividing by a radix power)
- * and by the general 128÷128 division when the divisor fits in 64 bits.
- *
- * Returns `[quotientHi, quotientLo, 0, remainder]`.
- *
- * Algorithm: standard schoolbook long division, processing the low
- * 64-bit word one bit at a time via shift-and-subtract. The high word
- * is divided first to produce the high quotient word, then the remainder
- * chains into the low word division.
+ * `floor((hi·2^64 + lo) / d)`, all unsigned, for `hi < d` (so the quotient fits in
+ * 64 bits). The caller derives the remainder as `lo - q·d`.
  */
-internal fun unsignedDivRemBy64(dividendHi: Long, dividendLo: Long, divisor: Long): LongArray {
-    val dU = divisor.toULong()
-    val nHiU = dividendHi.toULong()
-    val nLoU = dividendLo.toULong()
+internal fun divide128By64(hi: Long, lo: Long, d: Long): Long {
+    if (hi == 0L) return divideUnsigned64(lo, d)
 
-    if (nHiU == 0.toULong()) {
-        return longArrayOf(0L, (nLoU / dU).toLong(), 0L, (nLoU % dU).toLong())
+    // Normalize: shift the divisor until its top bit is set, so each estimated
+    // quotient digit is off by at most 2.
+    val s = d.countLeadingZeroBits()
+    val v = d shl s
+    val vn1 = v ushr 32
+    val vn0 = v and MASK32
+    val un32 = if (s == 0) hi else (hi shl s) or (lo ushr (64 - s))
+    val un10 = lo shl s
+    val un1 = un10 ushr 32
+    val un0 = un10 and MASK32
+
+    // High 32-bit digit of the quotient.
+    var q1 = divideUnsigned64(un32, vn1)
+    var rhat = un32 - q1 * vn1
+    while (q1 >= TWO32 || ugt(q1 * vn0, (rhat shl 32) + un1)) {
+        q1--
+        rhat += vn1
+        if (rhat >= TWO32) break
     }
 
-    val qHiU = nHiU / dU
-    var remainder = nHiU % dU
-    var qLoU: ULong = 0u
+    // Low 32-bit digit.
+    val un21 = (un32 shl 32) + un1 - q1 * v
+    var q0 = divideUnsigned64(un21, vn1)
+    rhat = un21 - q0 * vn1
+    while (q0 >= TWO32 || ugt(q0 * vn0, (rhat shl 32) + un0)) {
+        q0--
+        rhat += vn1
+        if (rhat >= TWO32) break
+    }
+    return (q1 shl 32) + q0
+}
 
-    // Process each bit of the low word, carrying the remainder from the high word.
-    // On each iteration: shift remainder left by 1, bring in the next dividend bit,
-    // subtract divisor if remainder >= divisor. This compiles to branchless code
-    // on most architectures.
-    for (i in 63 downTo 0) {
-        val bit = (nLoU shr i) and 1u
-        val overflow = remainder shr 63 // will be lost in the left shift
-        remainder = (remainder shl 1) or bit
-        if (overflow != 0.toULong() || remainder >= dU) {
-            remainder -= dU
-            qLoU = qLoU or (1.toULong() shl i)
+private fun lessThan128(aHi: Long, aLo: Long, bHi: Long, bLo: Long): Boolean =
+    ult(aHi, bHi) || (aHi == bHi && ult(aLo, bLo))
+
+/**
+ * The exact quotient of `n / d` for `dHi != 0` and `n >= d` (it fits in 64 bits).
+ *
+ * Estimates from the top 64 bits of the normalized divisor, dividing the halved
+ * dividend so the 128/64 step cannot overflow; after undoing both the estimate is
+ * exact or one too large (Hacker's Delight §9.5, `divdu`), fixed with one compare.
+ */
+private fun quotientWide(nHi: Long, nLo: Long, dHi: Long, dLo: Long): Long {
+    val s = dHi.countLeadingZeroBits()
+    val v1 = if (s == 0) dHi else (dHi shl s) or (dLo ushr (64 - s))
+    var q = divide128By64(nHi ushr 1, (nLo ushr 1) or (nHi shl 63), v1) ushr (63 - s)
+    if (q != 0L) q--
+    // r = n - q·d; if r >= d the estimate was one short.
+    val pLo = q * dLo
+    val pHi = unsignedMultiplyHigh(q, dLo) + q * dHi
+    val rLo = nLo - pLo
+    val rHi = nHi - pHi - (if (ult(nLo, pLo)) 1L else 0L)
+    return if (lessThan128(rHi, rLo, dHi, dLo)) q else q + 1
+}
+
+// The quotient and remainder functions compute both result words through the
+// branches and construct the result once, at the end. With one allocation site,
+// HotSpot's escape analysis can scalar-replace the result when the call inlines;
+// a result merged from several sites (or from a shared constant like ZERO)
+// stays a heap object.
+
+/**
+ * Unsigned 128-bit quotient. Separate from [unsignedRemainder] (rather than one
+ * function returning both) so neither allocates nor boxes, and each does only the
+ * work its result needs.
+ *
+ * @throws ArithmeticException if the divisor is zero.
+ */
+internal fun unsignedQuotient(nHi: Long, nLo: Long, dHi: Long, dLo: Long): com.vitorpamplona.long128.UInt128 {
+    var qHi = 0L
+    val qLo: Long
+    if (dHi == 0L) {
+        if (dLo == 0L) throw ArithmeticException("Division by zero")
+        qLo = if (nHi == 0L) {
+            divideUnsigned64(nLo, dLo)
+        } else if (ult(nHi, dLo)) {
+            divide128By64(nHi, nLo, dLo)
+        } else {
+            qHi = divideUnsigned64(nHi, dLo)
+            divide128By64(nHi - qHi * dLo, nLo, dLo)
         }
+    } else {
+        qLo = if (lessThan128(nHi, nLo, dHi, dLo)) 0L else quotientWide(nHi, nLo, dHi, dLo)
     }
-
-    return longArrayOf(qHiU.toLong(), qLoU.toLong(), 0L, remainder.toLong())
+    return com.vitorpamplona.long128.UInt128(qHi, qLo)
 }
 
 /**
- * Unsigned 128-bit divided by 128-bit, with remainder.
+ * Unsigned 128-bit remainder.
  *
- * Returns `[quotientHi, quotientLo, remainderHi, remainderLo]`.
- *
- * Algorithm:
- * 1. Fast exit if dividend < divisor (quotient=0, remainder=dividend)
- * 2. Fast path if divisor fits in 64 bits → delegates to [unsignedDivRemBy64]
- * 3. General case: binary long-division (shift-and-subtract), processing one
- *    bit per iteration from the MSB of the dividend downward. Iteration count
- *    is `128 - countLeadingZeros(dividend)`, so small dividends are fast.
- *
- * @throws ArithmeticException if divisor is zero.
+ * @throws ArithmeticException if the divisor is zero.
  */
-internal fun unsignedDivRem(
-    dividendHi: Long, dividendLo: Long,
-    divisorHi: Long, divisorLo: Long,
-): LongArray {
-    if (divisorHi == 0L && divisorLo == 0L) throw ArithmeticException("Division by zero")
-
-    val cmp = compareUnsigned128(dividendHi, dividendLo, divisorHi, divisorLo)
-    if (cmp < 0) return longArrayOf(0L, 0L, dividendHi, dividendLo)
-    if (cmp == 0) return longArrayOf(0L, 1L, 0L, 0L)
-
-    // When the divisor fits in a single 64-bit word, use the faster O(64) path.
-    if (divisorHi == 0L) return unsignedDivRemBy64(dividendHi, dividendLo, divisorLo)
-
-    // General binary long-division.
-    // We only iterate from the MSB of the dividend, not from bit 127.
-    var qHi = 0L; var qLo = 0L
-    var rHi = 0L; var rLo = 0L
-
-    val msbPosition = 127 - countLeadingZeros128(dividendHi, dividendLo)
-
-    for (i in msbPosition downTo 0) {
-        // Shift remainder left by 1
-        rHi = (rHi shl 1) or (rLo ushr 63)
-        rLo = rLo shl 1
-
-        // Bring down bit i of the dividend
-        val bit = if (i >= 64) (dividendHi ushr (i - 64)) and 1L else (dividendLo ushr i) and 1L
-        rLo = rLo or bit
-
-        // If remainder >= divisor, subtract divisor and set quotient bit
-        if (compareUnsigned128(rHi, rLo, divisorHi, divisorLo) >= 0) {
-            val newLo = rLo - divisorLo
-            val borrow = if (rLo.toULong() < divisorLo.toULong()) 1L else 0L
-            rHi = rHi - divisorHi - borrow
-            rLo = newLo
-            if (i >= 64) qHi = qHi or (1L shl (i - 64)) else qLo = qLo or (1L shl i)
+internal fun unsignedRemainder(nHi: Long, nLo: Long, dHi: Long, dLo: Long): com.vitorpamplona.long128.UInt128 {
+    val rHi: Long
+    val rLo: Long
+    if (dHi == 0L) {
+        if (dLo == 0L) throw ArithmeticException("Division by zero")
+        rHi = 0L
+        rLo = if (nHi == 0L) {
+            nLo - divideUnsigned64(nLo, dLo) * dLo
+        } else {
+            val r1 = if (ult(nHi, dLo)) nHi else nHi - divideUnsigned64(nHi, dLo) * dLo   // nHi mod d
+            nLo - divide128By64(r1, nLo, dLo) * dLo
         }
+    } else if (lessThan128(nHi, nLo, dHi, dLo)) {
+        rHi = nHi; rLo = nLo
+    } else {
+        val q = quotientWide(nHi, nLo, dHi, dLo)
+        val pLo = q * dLo
+        val pHi = unsignedMultiplyHigh(q, dLo) + q * dHi
+        rHi = nHi - pHi - (if (ult(nLo, pLo)) 1L else 0L)
+        rLo = nLo - pLo
     }
-    return longArrayOf(qHi, qLo, rHi, rLo)
+    return com.vitorpamplona.long128.UInt128(rHi, rLo)
 }
 
 // ─── String conversion ───────────────────────────────────────────────
 
-private val RADIX_DIGITS = "0123456789abcdefghijklmnopqrstuvwxyz".toCharArray()
-
 /**
  * Converts an unsigned 128-bit value to its string representation in the given radix.
  *
- * Algorithm: repeatedly divides by [radix] using [unsignedDivRemBy64], collecting
- * the remainder as the next least-significant digit. This is O(n * 64) where n
- * is the number of digits (up to 39 for decimal, 128 for binary).
- *
- * For values that fit in a single [ULong], delegates to stdlib's [ULong.toString]
- * to avoid the division loop entirely.
+ * Divides by the largest power of [radix] that fits in a signed `Long` (10^18 for
+ * decimal), so a 39-digit value takes at most three 128-bit divisions; each chunk
+ * is printed by the stdlib's `Long.toString` and zero-padded.
  */
 internal fun unsignedToString(hi: Long, lo: Long, radix: Int): String {
     require(radix in 2..36) { "Radix must be in 2..36" }
-    if (hi == 0L && lo == 0L) return "0"
     if (hi == 0L) return lo.toULong().toString(radix)
 
-    val buf = StringBuilder()
+    var chunk = radix.toLong()
+    var digits = 1
+    while (chunk <= Long.MAX_VALUE / radix) { chunk *= radix; digits++ }
+
+    val parts = ArrayList<String>(4)
     var curHi = hi; var curLo = lo
-
-    while (curHi != 0L || curLo != 0L) {
-        val result = unsignedDivRemBy64(curHi, curLo, radix.toLong())
-        curHi = result[0]; curLo = result[1]
-        buf.append(RADIX_DIGITS[result[3].toInt()])
+    while (curHi != 0L) {
+        // (curHi, curLo) / chunk: high word first, then 128/64 on (remainder, curLo)
+        val qHi = divideUnsigned64(curHi, chunk)
+        val qLo = divide128By64(curHi - qHi * chunk, curLo, chunk)
+        parts.add((curLo - qLo * chunk).toString(radix).padStart(digits, '0'))
+        curHi = qHi; curLo = qLo
     }
-
-    return buf.reverse().toString()
+    val sb = StringBuilder(curLo.toULong().toString(radix))
+    for (i in parts.indices.reversed()) sb.append(parts[i])
+    return sb.toString()
 }
 
 // ─── String parsing ──────────────────────────────────────────────────

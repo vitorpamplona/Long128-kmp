@@ -1,21 +1,29 @@
+@file:Suppress("NOTHING_TO_INLINE")
+
 package com.vitorpamplona.long128
 
 import com.vitorpamplona.long128.internal.*
+import kotlin.jvm.JvmInline
 
 /**
  * A 128-bit signed integer.
  *
  * ## Representation
  *
- * Stored as two [Long] values: [hi] (most-significant 64 bits, signed) and
- * [lo] (least-significant 64 bits, treated as unsigned). The numerical value is:
+ Two 64-bit words: [hi] (most-significant 64 bits, signed) and [lo]
+ * (least-significant 64 bits, treated as unsigned). The numerical value is:
  *
  *     hi × 2^64 + lo.toULong()
  *
- * This two-Long representation is used on all platforms because Kotlin does not
- * yet support multi-field value classes (MFVC). On JVM, each `Int128` is a heap
- * object. For allocation-free hot loops, use [Int128Array] which stores values
- * in a flat `LongArray`.
+ * `Int128` is a value class over platform storage ([Bits128]):
+ * - **Native**: a `Vector128` register value. Results are never heap-allocated;
+ *   an `Int128` is passed and returned in a SIMD register, like a `Long` in a
+ *   general-purpose one. It is boxed only where every value class is: as `Any`,
+ *   as a nullable `Int128?`, or as a generic type argument (`List<Int128>`).
+ * - **JVM**: one small object holding two `Long`s, as before (Kotlin has no
+ *   multi-field value classes yet).
+ *
+ * Being a value class, `Int128` has no identity: compare with `==`, not `===`.
  *
  * ## Overflow semantics
  *
@@ -26,19 +34,28 @@ import com.vitorpamplona.long128.internal.*
  *
  * ## Platform optimization
  *
- * Multiply and divide delegate to [multiply128] and [signedDivide128], which each
- * platform implements optimally:
+ * Multiply and divide delegate to [unsignedMultiplyHigh] and [signedQuotient128], which
+ * each platform implements optimally:
  * - **JVM** (17+): Uses `Math.multiplyHigh` / `Math.unsignedMultiplyHigh` (JDK 18+)
  *   resolved via [java.lang.invoke.MethodHandle] to avoid Android D8 desugaring.
- * - **Native**: Uses C interop with `__int128`, compiled to `mul`/`umulh` (ARM64)
- *   or `mul`/`imul` (x86-64) by Clang.
+ * - **Native**: Calls C `__int128` code through `@GCUnsafeCall`; LLVM inlines it,
+ *   so multiply-high is a single `mul` (x86-64) / `umulh` (ARM64).
  *
  * Addition and subtraction are pure Kotlin on all platforms. The carry detection
  * pattern `(result.toULong() < operand.toULong())` is recognized by LLVM and
  * HotSpot as a carry-flag test and compiled to `add`+`adc` / `adds`+`adc` without
  * branching.
  */
-class Int128(val hi: Long, val lo: Long) : Comparable<Int128> {
+@JvmInline
+value class Int128 @PublishedApi internal constructor(@PublishedApi internal val bits: Bits128) : Comparable<Int128> {
+
+    constructor(hi: Long, lo: Long) : this(bits128(hi, lo))
+
+    /** Most-significant 64 bits (signed). */
+    inline val hi: Long get() = bits.hiWord()
+
+    /** Least-significant 64 bits (read as unsigned). */
+    inline val lo: Long get() = bits.loWord()
 
     // ── Arithmetic (wrapping) ────────────────────────────────────────
 
@@ -58,30 +75,22 @@ class Int128(val hi: Long, val lo: Long) : Comparable<Int128> {
         return Int128(hi - other.hi - borrow, resultLo)
     }
 
-    operator fun times(other: Int128): Int128 {
-        val result = multiply128(hi, lo, other.hi, other.lo)
-        return Int128(result[0], result[1])
-    }
+    inline operator fun times(other: Int128): Int128 =
+        Int128(multiply128High(hi, lo, other.hi, other.lo), lo * other.lo)
 
     /**
      * Truncated division (rounds toward zero), matching Kotlin's `/` on [Int]/[Long].
      * @throws ArithmeticException if [other] is zero
      * @throws ArithmeticException if this is [MIN_VALUE] and [other] is -1 (result overflows)
      */
-    operator fun div(other: Int128): Int128 {
-        val result = signedDivide128(hi, lo, other.hi, other.lo)
-        return Int128(result[0], result[1])
-    }
+    operator fun div(other: Int128): Int128 = signedQuotient128(hi, lo, other.hi, other.lo)
 
     /**
      * Remainder after truncated division, matching Kotlin's `%` on [Int]/[Long].
      * The result has the same sign as the dividend.
      * @throws ArithmeticException if [other] is zero
      */
-    operator fun rem(other: Int128): Int128 {
-        val result = signedDivide128(hi, lo, other.hi, other.lo)
-        return Int128(result[2], result[3])
-    }
+    operator fun rem(other: Int128): Int128 = signedRemainder128(hi, lo, other.hi, other.lo)
 
     /** Two's complement negation. Note: `-MIN_VALUE == MIN_VALUE` (wraps). */
     operator fun unaryMinus(): Int128 {
@@ -106,31 +115,34 @@ class Int128(val hi: Long, val lo: Long) : Comparable<Int128> {
     /** Left shift. Shift amount is masked to 0..127 (`bitCount and 127`). */
     infix fun shl(bitCount: Int): Int128 {
         val n = bitCount and 127
-        return when {
-            n == 0 -> this
-            n < 64 -> Int128((hi shl n) or (lo ushr (64 - n)), lo shl n)
-            else -> Int128(lo shl (n - 64), 0L)
-        }
+        // n == 0 must not reach the `64 - n` shifts (a shift by 64 is a shift by 0)
+        // One construction site so escape analysis can scalar-replace the result.
+        return Int128(
+            if (n == 0) hi else if (n < 64) (hi shl n) or (lo ushr (64 - n)) else lo shl (n - 64),
+            if (n == 0) lo else if (n < 64) lo shl n else 0L,
+        )
     }
 
     /** Arithmetic right shift (sign-extending). Shift amount masked to 0..127. */
     infix fun shr(bitCount: Int): Int128 {
         val n = bitCount and 127
-        return when {
-            n == 0 -> this
-            n < 64 -> Int128(hi shr n, (lo ushr n) or (hi shl (64 - n)))
-            else -> Int128(hi shr 63, hi shr (n - 64)) // fills with sign bit
-        }
+        // n == 0 must not reach the `64 - n` shifts (a shift by 64 is a shift by 0)
+        // One construction site so escape analysis can scalar-replace the result.
+        return Int128(
+            if (n == 0) hi else if (n < 64) hi shr n else hi shr 63,
+            if (n == 0) lo else if (n < 64) (lo ushr n) or (hi shl (64 - n)) else hi shr (n - 64),
+        ) // fills with sign bit
     }
 
     /** Logical right shift (zero-filling). Shift amount masked to 0..127. */
     infix fun ushr(bitCount: Int): Int128 {
         val n = bitCount and 127
-        return when {
-            n == 0 -> this
-            n < 64 -> Int128(hi ushr n, (lo ushr n) or (hi shl (64 - n)))
-            else -> Int128(0L, hi ushr (n - 64))
-        }
+        // n == 0 must not reach the `64 - n` shifts (a shift by 64 is a shift by 0)
+        // One construction site so escape analysis can scalar-replace the result.
+        return Int128(
+            if (n == 0) hi else if (n < 64) hi ushr n else 0L,
+            if (n == 0) lo else if (n < 64) (lo ushr n) or (hi shl (64 - n)) else hi ushr (n - 64),
+        )
     }
 
     // ── Comparison ───────────────────────────────────────────────────
@@ -140,11 +152,6 @@ class Int128(val hi: Long, val lo: Long) : Comparable<Int128> {
         val hiCmp = hi.compareTo(other.hi) // signed comparison of high word
         return if (hiCmp != 0) hiCmp else lo.toULong().compareTo(other.lo.toULong())
     }
-
-    override fun equals(other: Any?): Boolean =
-        other is Int128 && hi == other.hi && lo == other.lo
-
-    override fun hashCode(): Int = 31 * hi.hashCode() + lo.hashCode()
 
     // ── Conversions ──────────────────────────────────────────────────
 

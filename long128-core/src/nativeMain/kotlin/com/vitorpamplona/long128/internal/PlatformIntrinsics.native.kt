@@ -1,87 +1,138 @@
-@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
 
 package com.vitorpamplona.long128.internal
 
-import int128ops.*
-import kotlinx.cinterop.*
+import com.vitorpamplona.long128.Int128
+import com.vitorpamplona.long128.UInt128
+import kotlin.native.internal.GCUnsafeCall
 
 /**
- * Native intrinsics for 128-bit arithmetic via C interop with `__int128`.
+ * Native intrinsics for 128-bit arithmetic, backed by C `__int128` code in `int128.def`.
  *
- * Each function delegates to a C function compiled from `__int128` /
- * `unsigned __int128` types defined in `int128.def`. Clang compiles these
- * to the optimal hardware instruction for each target architecture:
+ * ## Why `@GCUnsafeCall` instead of the generated cinterop bindings
+ *
+ * A normal cinterop call switches the thread's GC state to "native" before the call
+ * and back to "runnable" after it, so the garbage collector can run while C code
+ * blocks. Each switch is an atomic `xchg`; together they cost ~11 ns, which is
+ * 6x the cost of the multiply they wrap. LLVM already inlines the C body (the
+ * cinterop C code is linked into the program as bitcode), so that switch is
+ * the whole overhead.
+ *
+ * `@GCUnsafeCall("symbol")` is the annotation the Kotlin/Native stdlib uses for
+ * its own small runtime functions: it calls the C symbol directly, without the
+ * state switch. LLVM then inlines the C body into the Kotlin caller, and
+ * `unsignedMultiplyHigh` compiles to the same single instruction as C:
  *
  * | Operation | x86-64 | ARM64 |
  * |-----------|--------|-------|
- * | multiply-high | `mul rsi` (1 insn) | `umulh` (1 insn) |
- * | full 128×128 mul | `imul`+`imul`+`mul`+`add`+`add` (5 insns) | `umulh`+`madd`+`madd`+`mul` (4 insns) |
- * | divide | `call __divti3` (optimized runtime) | same |
+ * | unsigned multiply-high | `mul` | `umulh` |
+ * | signed multiply-high | `imul` (one-operand form) | `smulh` |
+ * | 128÷128 divide | one `call __udivti3` / `__divti3` | same |
  *
- * Verified via objdump (x86-64) and clang cross-compilation (ARM64) in
- * `verify-instructions.sh`.
+ * Verified on the linked benchmark binary in `verify-instructions.sh`.
  *
- * ## ABI portability
+ * ## Safety contract
  *
- * Multi-word return values use **out-pointer parameters** instead of struct
- * returns. This avoids calling-convention differences:
- * - System V (Linux/macOS): would return 16-byte structs in RAX:RDX
- * - Windows x64 (mingwX64): returns structs > 8 bytes via hidden pointer
+ * Skipping the state switch is safe only for C functions that are short, never
+ * block, never call back into Kotlin and never touch Kotlin objects: the GC
+ * cannot stop this thread while one runs. Every function bound here is a few
+ * instructions of integer arithmetic (division is a bounded ~100-cycle
+ * `__udivti3` call). Do not bind anything else this way.
  *
- * Out-parameters work identically on both ABIs and on every cinterop target.
- *
- * ## Why add/sub stay in pure Kotlin
- *
- * cinterop calls have ~10-20ns overhead (GC safepoint). For add/sub the
- * actual work is ~2ns, so cinterop would make them slower. The Kotlin
- * carry-detection pattern `(result.toULong() < operand.toULong())` is
- * recognized by both GCC and Clang as a carry-flag test and compiles to
- * `add`+`adc` / `adds`+`adc` — the same instructions as the `__int128`
- * version (verified in `verify-instructions.sh`).
+ * `GCUnsafeCall` is a Kotlin/Native internal API (opt-in `InternalForKotlinNative`).
+ * The klib carries the annotation and the consumer's compiler lowers it when the
+ * app is linked, so CI should also build against new Kotlin releases.
  */
 
-internal actual fun unsignedMultiplyHigh(x: Long, y: Long): Long =
-    int128_multiply_high_unsigned(x, y)
+@GCUnsafeCall("int128_multiply_high_unsigned")
+private external fun cUnsignedMultiplyHigh(a: Long, b: Long): Long
 
-internal actual fun multiply128(aHi: Long, aLo: Long, bHi: Long, bLo: Long): LongArray =
-    memScoped {
-        val outHi = alloc<LongVar>()
-        val outLo = alloc<LongVar>()
-        int128_mul(aHi, aLo, bHi, bLo, outHi.ptr, outLo.ptr)
-        longArrayOf(outHi.value, outLo.value)
-    }
+@GCUnsafeCall("int128_multiply_high_signed")
+private external fun cSignedMultiplyHigh(a: Long, b: Long): Long
 
-internal actual fun unsignedDivide128(
-    dividendHi: Long, dividendLo: Long,
-    divisorHi: Long, divisorLo: Long,
-): LongArray {
+@GCUnsafeCall("uint128_udiv_hi")
+private external fun cUDivHi(aHi: Long, aLo: Long, bHi: Long, bLo: Long): Long
+
+@GCUnsafeCall("uint128_udiv_lo")
+private external fun cUDivLo(aHi: Long, aLo: Long, bHi: Long, bLo: Long): Long
+
+@GCUnsafeCall("uint128_urem_hi")
+private external fun cURemHi(aHi: Long, aLo: Long, bHi: Long, bLo: Long): Long
+
+@GCUnsafeCall("uint128_urem_lo")
+private external fun cURemLo(aHi: Long, aLo: Long, bHi: Long, bLo: Long): Long
+
+@GCUnsafeCall("int128_sdiv_hi")
+private external fun cSDivHi(aHi: Long, aLo: Long, bHi: Long, bLo: Long): Long
+
+@GCUnsafeCall("int128_sdiv_lo")
+private external fun cSDivLo(aHi: Long, aLo: Long, bHi: Long, bLo: Long): Long
+
+@GCUnsafeCall("int128_srem_hi")
+private external fun cSRemHi(aHi: Long, aLo: Long, bHi: Long, bLo: Long): Long
+
+@GCUnsafeCall("int128_srem_lo")
+private external fun cSRemLo(aHi: Long, aLo: Long, bHi: Long, bLo: Long): Long
+
+@PublishedApi internal actual fun unsignedMultiplyHigh(x: Long, y: Long): Long = cUnsignedMultiplyHigh(x, y)
+
+internal actual fun signedMultiplyHigh(x: Long, y: Long): Long = cSignedMultiplyHigh(x, y)
+
+// Two word-sized calls per result on the same operands: after inlining, LLVM merges
+// them into one 128-bit division, and when a caller needs both the quotient and the
+// remainder it derives the remainder from the same division.
+
+private fun checkDivisor(divisorHi: Long, divisorLo: Long) {
     if (divisorHi == 0L && divisorLo == 0L) throw ArithmeticException("Division by zero")
-    return memScoped {
-        val qHi = alloc<LongVar>()
-        val qLo = alloc<LongVar>()
-        val rHi = alloc<LongVar>()
-        val rLo = alloc<LongVar>()
-        uint128_udivrem(dividendHi, dividendLo, divisorHi, divisorLo,
-            qHi.ptr, qLo.ptr, rHi.ptr, rLo.ptr)
-        longArrayOf(qHi.value, qLo.value, rHi.value, rLo.value)
-    }
 }
 
-internal actual fun signedDivide128(
-    dividendHi: Long, dividendLo: Long,
-    divisorHi: Long, divisorLo: Long,
-): LongArray {
-    if (divisorHi == 0L && divisorLo == 0L) throw ArithmeticException("Division by zero")
-    if (dividendHi == Long.MIN_VALUE && dividendLo == 0L && divisorHi == -1L && divisorLo == -1L) {
+private fun isMinByMinusOne(dividendHi: Long, dividendLo: Long, divisorHi: Long, divisorLo: Long) =
+    dividendHi == Long.MIN_VALUE && dividendLo == 0L && divisorHi == -1L && divisorLo == -1L
+
+internal actual fun unsignedQuotient128(
+    dividendHi: Long, dividendLo: Long, divisorHi: Long, divisorLo: Long,
+): UInt128 {
+    checkDivisor(divisorHi, divisorLo)
+    return UInt128(
+        cUDivHi(dividendHi, dividendLo, divisorHi, divisorLo),
+        cUDivLo(dividendHi, dividendLo, divisorHi, divisorLo),
+    )
+}
+
+internal actual fun unsignedRemainder128(
+    dividendHi: Long, dividendLo: Long, divisorHi: Long, divisorLo: Long,
+): UInt128 {
+    checkDivisor(divisorHi, divisorLo)
+    return UInt128(
+        cURemHi(dividendHi, dividendLo, divisorHi, divisorLo),
+        cURemLo(dividendHi, dividendLo, divisorHi, divisorLo),
+    )
+}
+
+internal actual fun signedQuotient128(
+    dividendHi: Long, dividendLo: Long, divisorHi: Long, divisorLo: Long,
+): Int128 {
+    checkDivisor(divisorHi, divisorLo)
+    // __int128 MIN / -1 is undefined behavior in C: never hand it to the C helpers.
+    if (isMinByMinusOne(dividendHi, dividendLo, divisorHi, divisorLo)) {
         throw ArithmeticException("Int128 overflow: MIN_VALUE / -1")
     }
-    return memScoped {
-        val qHi = alloc<LongVar>()
-        val qLo = alloc<LongVar>()
-        val rHi = alloc<LongVar>()
-        val rLo = alloc<LongVar>()
-        int128_sdivrem(dividendHi, dividendLo, divisorHi, divisorLo,
-            qHi.ptr, qLo.ptr, rHi.ptr, rLo.ptr)
-        longArrayOf(qHi.value, qLo.value, rHi.value, rLo.value)
-    }
+    return Int128(
+        cSDivHi(dividendHi, dividendLo, divisorHi, divisorLo),
+        cSDivLo(dividendHi, dividendLo, divisorHi, divisorLo),
+    )
 }
+
+internal actual fun signedRemainder128(
+    dividendHi: Long, dividendLo: Long, divisorHi: Long, divisorLo: Long,
+): Int128 {
+    checkDivisor(divisorHi, divisorLo)
+    // MIN_VALUE % -1 == 0, as for Long. (In C it is undefined behavior.)
+    if (isMinByMinusOne(dividendHi, dividendLo, divisorHi, divisorLo)) return Int128.ZERO
+    return Int128(
+        cSRemHi(dividendHi, dividendLo, divisorHi, divisorLo),
+        cSRemLo(dividendHi, dividendLo, divisorHi, divisorLo),
+    )
+}
+
+internal actual fun divideUnsigned64(dividend: Long, divisor: Long): Long =
+    (dividend.toULong() / divisor.toULong()).toLong()

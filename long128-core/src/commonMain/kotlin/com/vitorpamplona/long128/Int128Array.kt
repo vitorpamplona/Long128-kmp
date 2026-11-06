@@ -1,3 +1,5 @@
+@file:Suppress("NOTHING_TO_INLINE")
+
 package com.vitorpamplona.long128
 
 /**
@@ -5,31 +7,22 @@ package com.vitorpamplona.long128
  *
  * ## Why this exists
  *
- * [Int128] is a regular class (not a value class) because Kotlin does not yet
- * support multi-field value classes. This means every `Int128` returned from an
- * operator is a heap allocation. In hot loops, this creates GC pressure.
- *
- * `Int128Array` avoids this by storing values in a contiguous `LongArray` with
- * layout `[hi₀, lo₀, hi₁, lo₁, ...]`. Getting and setting elements still creates
- * temporary `Int128` objects, but the backing storage is a single `long[]` with
- * no per-element object headers.
- *
- * ## Native batch operations
- *
- * On Kotlin/Native targets, the internal [data] array can be pinned and passed
- * directly to C batch functions (`int128_batch_add`, `int128_batch_mul`) that
- * process the entire array in a single cinterop call, amortizing the ~10-20ns
- * per-call GC safepoint overhead.
+ A `List<Int128>` or `Array<Int128>` stores each element boxed. `Int128Array` stores
+ * values in one contiguous `LongArray` with layout `[hi₀, lo₀, hi₁, lo₁, ...]`: no
+ * per-element object headers, and on native, `get` and `set` never allocate (an
+ * `Int128` is a register value there). On the JVM `get` creates one small object,
+ * which escape analysis usually removes.
+
  */
 class Int128Array(val size: Int) {
     @PublishedApi internal val data = LongArray(size * 2)
 
-    operator fun get(index: Int): Int128 {
+    inline operator fun get(index: Int): Int128 {
         val offset = index * 2
         return Int128(data[offset], data[offset + 1])
     }
 
-    operator fun set(index: Int, value: Int128) {
+    inline operator fun set(index: Int, value: Int128) {
         val offset = index * 2
         data[offset] = value.hi
         data[offset + 1] = value.lo
@@ -67,10 +60,19 @@ class Int128Array(val size: Int) {
     }
 }
 
-/** Creates an [Int128Array] from the given values. */
-fun int128ArrayOf(vararg values: Int128): Int128Array {
-    val array = Int128Array(values.size)
-    for (i in values.indices) array[i] = values[i]
+/**
+ * Creates an [Int128Array] from the given values: `int128ArrayOf(listOf(a, b, c))`.
+ *
+ * Takes a collection rather than `vararg` because Kotlin does not allow `vararg`
+ * parameters of a value-class type.
+ */
+fun int128ArrayOf(values: Collection<Int128>): Int128Array = values.toInt128Array()
+
+/** Copies these values into a new flat [Int128Array]. */
+fun Collection<Int128>.toInt128Array(): Int128Array {
+    val array = Int128Array(size)
+    var i = 0
+    for (v in this) array[i++] = v
     return array
 }
 
@@ -82,12 +84,12 @@ fun int128ArrayOf(vararg values: Int128): Int128Array {
 class UInt128Array(val size: Int) {
     @PublishedApi internal val data = LongArray(size * 2)
 
-    operator fun get(index: Int): UInt128 {
+    inline operator fun get(index: Int): UInt128 {
         val offset = index * 2
         return UInt128(data[offset], data[offset + 1])
     }
 
-    operator fun set(index: Int, value: UInt128) {
+    inline operator fun set(index: Int, value: UInt128) {
         val offset = index * 2
         data[offset] = value.hi
         data[offset + 1] = value.lo
@@ -121,9 +123,18 @@ class UInt128Array(val size: Int) {
     }
 }
 
-/** Creates a [UInt128Array] from the given values. */
-fun uint128ArrayOf(vararg values: UInt128): UInt128Array {
-    val array = UInt128Array(values.size)
-    for (i in values.indices) array[i] = values[i]
+/**
+ * Creates a [UInt128Array] from the given values: `uint128ArrayOf(listOf(a, b, c))`.
+ *
+ * Takes a collection rather than `vararg` because Kotlin does not allow `vararg`
+ * parameters of a value-class type.
+ */
+fun uint128ArrayOf(values: Collection<UInt128>): UInt128Array = values.toUInt128Array()
+
+/** Copies these values into a new flat [UInt128Array]. */
+fun Collection<UInt128>.toUInt128Array(): UInt128Array {
+    val array = UInt128Array(size)
+    var i = 0
+    for (v in this) array[i++] = v
     return array
 }

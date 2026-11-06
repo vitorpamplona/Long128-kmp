@@ -43,6 +43,7 @@ static void bench_add(int iterations) {
 
     for (int i = 0; i < iterations; i++) {
         acc += a + (u128)i; /* data dependency on i prevents vectorization */
+        __asm__ volatile("" : "+r"(acc)); /* no closed form: gcc folds the loop otherwise */
         acc += b;
     }
 
@@ -63,6 +64,7 @@ static void bench_sub(int iterations) {
 
     for (int i = 0; i < iterations; i++) {
         acc -= b + (u128)i; /* data dependency prevents vectorization */
+        __asm__ volatile("" : "+r"(acc)); /* no closed form: gcc folds the loop otherwise */
         acc += a;
     }
 
@@ -189,6 +191,58 @@ static void bench_compare(int iterations) {
     printf("  c_compare:       %8.2f ns/op\n", ns);
 }
 
+/* Same loops as bench_div / bench_div_large, but the divisor is read at run time.
+ * With a compile-time constant 7, gcc 13 turns the 128-bit division into a
+ * reciprocal multiply; Kotlin (and any library API) gets the divisor as data. */
+static volatile uint64_t rt_small_divisor = 7;
+static volatile uint64_t rt_large_divisor_hi = 3, rt_large_divisor_lo = 7;
+
+static void bench_div_rt(int iterations) {
+    u128 a = make_u128(0x12345678, 0x9ABCDEF0);
+    u128 b = (u128)rt_small_divisor;
+    u128 acc = a;
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    for (int i = 0; i < iterations; i++) acc = acc / b + a;
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    sink = (int64_t)acc;
+    printf("  c_div_by_small_rt: %6.2f ns/op\n", elapsed_ns(start, end) / iterations);
+}
+
+static void bench_div_large_rt(int iterations) {
+    u128 a = make_u128(0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFF0ULL);
+    u128 b = make_u128(rt_large_divisor_hi, rt_large_divisor_lo);
+    u128 acc = a;
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    for (int i = 0; i < iterations; i++) acc = acc / b + a;
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    sink = (int64_t)acc;
+    printf("  c_div_by_large_rt: %6.2f ns/op\n", elapsed_ns(start, end) / iterations);
+}
+
+/* Throughput: out[i] = x[i] * y[i] over 1024 values, no dependency chain. */
+#define ARRAY_N 1024
+static u128 arr_x[ARRAY_N], arr_y[ARRAY_N], arr_out[ARRAY_N];
+
+static void bench_array_mul(int iterations) {
+    for (int i = 0; i < ARRAY_N; i++) {
+        uint64_t m = (uint64_t)i * 0x9E3779B97F4A7C15ULL, n = (uint64_t)i * 0xC2B2AE3D27D4EB4FULL;
+        arr_x[i] = make_u128(m + 1, m + 2);
+        arr_y[i] = make_u128(n + 7, n + 8);
+    }
+    int rounds = iterations / ARRAY_N;
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    for (int r = 0; r < rounds; r++) {
+        for (int i = 0; i < ARRAY_N; i++) arr_out[i] = arr_x[i] * arr_y[i];
+        __asm__ volatile("" ::: "memory"); /* keep each round */
+    }
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    sink = (int64_t)arr_out[ARRAY_N - 1];
+    printf("  c_array_mul:     %8.2f ns/op\n", elapsed_ns(start, end) / ((double)rounds * ARRAY_N));
+}
+
 static void bench_mixed(int iterations) {
     /* Realistic workload: multiply-accumulate with occasional divide */
     u128 acc = make_u128(0, 1);
@@ -230,7 +284,10 @@ int main() {
     bench_compare(N);
     bench_div(N_DIV);
     bench_div_large(N_DIV);
+    bench_div_rt(N_DIV);
+    bench_div_large_rt(N_DIV);
     bench_mixed(N);
+    bench_array_mul(N);
 
     printf("─────────────────────────────────────────────\n");
     return 0;

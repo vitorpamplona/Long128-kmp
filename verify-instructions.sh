@@ -1,11 +1,17 @@
 #!/bin/bash
 # verify-instructions.sh — Proves the README claims about CPU instruction usage.
 #
-# Run: ./verify-instructions.sh
+# Run: ./verify-instructions.sh                 # all sections
+#      ./verify-instructions.sh --native-only   # only section 4 (linked Kotlin/Native binary)
 #
-# Requires: gcc, objdump, javap, and a successful ./gradlew :long128-core:jvmTest
+# Requires: gcc, objdump, javap, and a successful ./gradlew :long128-core:jvmTest.
+# Section 4 also needs the native benchmark binary (Linux only):
+#   ./gradlew :benchmark:linkReleaseExecutableLinuxX64   (and/or ...LinuxArm64)
+# and is skipped when it has not been built.
 
 set -e
+NATIVE_ONLY=0
+[ "${1:-}" = "--native-only" ] && NATIVE_ONLY=1
 PASS=0
 FAIL=0
 
@@ -17,6 +23,7 @@ echo " Long128-kmp Instruction Verification"
 echo "========================================"
 echo ""
 
+if [ "$NATIVE_ONLY" = 0 ]; then
 # -------------------------------------------------------------------
 # 1. JVM BYTECODE VERIFICATION
 # -------------------------------------------------------------------
@@ -144,11 +151,11 @@ else
 fi
 
 # Claim: division calls runtime helper (no hardware 128÷128 div exists on x86-64)
-SDIV=$(extract_func int128_sdivrem)
+SDIV=$(extract_func int128_sdiv_lo)
 if echo "$SDIV" | grep -q "call"; then
-    pass "int128_sdivrem → calls __divti3 runtime (no hardware 128÷128 div on x86-64, as documented)"
+    pass "int128_sdiv_lo → calls __divti3 runtime (no hardware 128÷128 div on x86-64, as documented)"
 else
-    fail "int128_sdivrem does not call runtime helper (unexpected)"
+    fail "int128_sdiv_lo does not call runtime helper (unexpected)"
 fi
 
 # Claim: int128_add uses add + adc (carry flag, not branch)
@@ -275,8 +282,131 @@ fi
 
 echo ""
 
+fi  # NATIVE_ONLY
+
 # -------------------------------------------------------------------
-# 4. SUMMARY
+# 4. LINKED KOTLIN/NATIVE BINARY (what users actually run)
+# -------------------------------------------------------------------
+# Sections 2-3 disassemble the C helpers on their own. This section disassembles
+# the release benchmark executable, where long128-core is consumed as a klib by
+# another module, and checks that @GCUnsafeCall let LLVM inline the C bodies:
+# multiply-high is a bare mul/umulh inside Kotlin code, with no `xchg` GC
+# thread-state switch around it (the ~11 ns a plain cinterop call costs).
+echo "--- Kotlin/Native linked binary (benchmark release executable) ---"
+
+# Summarize every Kotlin function of this project (library + benchmark) in one pass.
+# The checks below are totals across those functions, because which functions LLVM
+# keeps out of line (Int128.times, signedDivide128, the benchmark loops) varies by target.
+#
+# A GC thread-state switch is an atomic exchange on the thread's state word:
+# `xchg` with a memory operand on x86-64; `swpal` (LSE) or an `ldaxr`/`stlxr` loop on ARM64. The function
+# that prints results also contains them (Console.print), so a switch only counts
+# when it sits within W instructions of a multiply-high — the shape a plain cinterop
+# call has after LLVM inlines it.
+#
+# A 128-bit division is one call to __divti3 / __udivti3 / __modti3 / __umodti3.
+# Each word of a result is a separate C helper; if LLVM failed to merge them, the
+# calls would sit back to back, so two division calls within W instructions count
+# as a duplicated division.
+#
+# Output: mulhi mulhi_near_switch c_helper_calls bridge_calls duplicated_divisions
+kn_summary() {
+    awk -v MULHI="$2" -v W=16 '
+        # memory-operand xchg only: `xchg ax,ax` is a 2-byte NOP used as padding
+        function is_switch(l) { return (l ~ /xchg/ && l ~ /PTR|\(/) || l ~ /swpal|stlxr/ }
+        # Function labels: "0000000000401000 <kfun:...>:" (ELF / modern llvm-objdump)
+        # or "_kfun:...:" (Mach-O style). Instruction lines start with whitespace.
+        /^[0-9a-f]+ <.*>:$/ || /^[^ \t].*:$/ {
+            name = $0; sub(/^[0-9a-f]+ </, "", name); sub(/^_/, "", name)
+            inlib = index(name, "kfun:com.vitorpamplona.long128") == 1
+            n = 0; ahead = 0; lastdiv = -1000; next
+        }
+        inlib {
+            n++; buf[n % W] = $0
+            if (ahead > 0) { ahead--; if (is_switch($0)) { near++; ahead = 0 } }
+            if ($0 ~ MULHI) {
+                mul++; hit = 0
+                for (i = 1; i < W && i < n; i++) if (is_switch(buf[(n - i) % W])) hit = 1
+                if (hit) near++; else ahead = W
+            }
+            if ($0 ~ /<_?(int128|uint128)_[a-z_]+>/) helper++   # call into a C helper: not inlined
+            if ($0 ~ /_knbridge[0-9]+>/) bridge++                # cinterop C bridge
+            if ($0 ~ /call|bl[[:space:]]/ && $0 ~ /__u?(div|mod)ti3/) {
+                if (n - lastdiv < W) dup++
+                lastdiv = n
+            }
+        }
+        END { printf "%d %d %d %d %d\n", mul, near, helper, bridge, dup }
+    ' "$1"
+}
+
+check_kn_binary() {
+    # mulhi is an ERE for the multiply-high mnemonic; insn is how messages print it
+    local arch=$1 bin=$2 mulhi=$3 insn=$4 dis
+    dis=$(mktemp)
+    # GNU objdump handles the host arch; llvm-objdump (macOS ships it as `objdump`) handles both.
+    if [ "$arch" = "x86-64" ] && objdump -d --no-show-raw-insn -M intel "$bin" > "$dis" 2>/dev/null && [ -s "$dis" ]; then
+        :
+    elif llvm-objdump -d --no-show-raw-insn "$bin" > "$dis" 2>/dev/null && [ -s "$dis" ]; then
+        :
+    elif objdump -d --no-show-raw-insn "$bin" > "$dis" 2>/dev/null && grep -qE "[[:space:]]${mulhi}[[:space:]]" "$dis"; then
+        :
+    elif [ "$arch" = "ARM64" ] && arm_objdump=$(ls "$HOME"/.konan/dependencies/aarch64-unknown-linux-gnu-*/bin/aarch64-unknown-linux-gnu-objdump \
+            "$(command -v aarch64-linux-gnu-objdump 2>/dev/null)" 2>/dev/null | head -1) && [ -n "$arm_objdump" ] \
+            && "$arm_objdump" -d --no-show-raw-insn "$bin" > "$dis" 2>/dev/null && [ -s "$dis" ]; then
+        :   # the aarch64 binutils Kotlin/Native downloads to cross-link linuxArm64
+    else
+        fail "$arch: cannot disassemble $bin (need llvm-objdump or an objdump for this arch)"; rm -f "$dis"; return
+    fi
+
+    local mul near helper bridge dup
+    read -r mul near helper bridge dup <<< "$(kn_summary "$dis" "[[:space:]]${mulhi}[[:space:]]")"
+    rm -f "$dis"
+
+    if [ "$mul" -gt 0 ]; then
+        pass "$arch: multiply-high is an inline '$insn' in Kotlin code ($mul sites, incl. Int128.times and the benchmark loops)"
+    else
+        fail "$arch: no inline '$insn' in Kotlin code"
+    fi
+    if [ "$helper" = 0 ]; then
+        pass "$arch: Kotlin code never calls the C helpers — LLVM inlined every @GCUnsafeCall body"
+    else
+        fail "$arch: $helper calls to C helpers left (not inlined; check compilerOpts CPU in int128.def)"
+    fi
+    if [ "$mul" -gt 0 ] && [ "$near" = 0 ] && [ "$bridge" = 0 ]; then
+        pass "$arch: no GC thread-state switch around any multiply-high, no cinterop bridge calls"
+    else
+        fail "$arch: $near multiply-high sites inside a GC thread-state switch, $bridge cinterop bridge calls"
+    fi
+    if [ "$dup" = 0 ]; then
+        pass "$arch: each division is one __divti3/__udivti3/__modti3 call (word helpers merged by LLVM)"
+    else
+        fail "$arch: $dup division calls duplicated back to back (per-word C helpers were not merged)"
+    fi
+}
+
+KN_FOUND=0
+# x86-64 multiply-high is `mul` in Intel syntax, `mulq` in AT&T (llvm-objdump's default).
+for spec in \
+    "x86-64:linuxX64:mulq?:mul" "ARM64:linuxArm64:umulh:umulh" \
+    "x86-64:macosX64:mulq?:mul" "ARM64:macosArm64:umulh:umulh"
+do
+    IFS=: read -r arch target mulhi insn <<< "$spec"
+    bin="benchmark/build/bin/$target/releaseExecutable/benchmark.kexe"
+    if [ -f "$bin" ]; then
+        echo "  [$target] $bin"
+        check_kn_binary "$arch" "$bin" "$mulhi" "$insn"
+        KN_FOUND=1
+    fi
+done
+if [ "$KN_FOUND" = 0 ]; then
+    echo "  SKIP: no benchmark binary. Build one: ./gradlew :benchmark:linkReleaseExecutableLinuxX64"
+fi
+
+echo ""
+
+# -------------------------------------------------------------------
+# 5. SUMMARY
 # -------------------------------------------------------------------
 echo "========================================"
 echo " Results: $PASS passed, $FAIL failed"
