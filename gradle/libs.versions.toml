@@ -1,7 +1,7 @@
 [versions]
-kotlin = "2.1.20"
+kotlin = "2.4.21"
 bignum = "0.3.10"
-kotlinx-benchmark = "0.4.13"
+kotlinx-benchmark = "0.5.0"
 
 [libraries]
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
