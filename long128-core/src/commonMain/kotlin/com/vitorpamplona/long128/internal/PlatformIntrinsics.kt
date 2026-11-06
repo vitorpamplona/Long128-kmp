@@ -17,7 +17,7 @@ package com.vitorpamplona.long128.internal
  *   state switch and lets LLVM inline the C body into the Kotlin caller:
  *   multiply-high becomes a single `mul` (x86-64) / `umulh` (ARM64).
  *
- * Division returns `[qHi, qLo, rHi, rLo]` packed in a `LongArray`.
+ * Division returns the `Int128` / `UInt128` result directly.
  */
 
 /**
@@ -30,7 +30,7 @@ package com.vitorpamplona.long128.internal
  * - Android API < 31: Karatsuba 4-multiply decomposition (pure Kotlin, D8 fallback)
  * - Native: `unsigned __int128` multiply via `@GCUnsafeCall` → single `mul`/`umulh`, inlined
  */
-internal expect fun unsignedMultiplyHigh(x: Long, y: Long): Long
+@PublishedApi internal expect fun unsignedMultiplyHigh(x: Long, y: Long): Long
 
 /**
  * Returns the upper 64 bits of the signed 128-bit product `x * y`.
@@ -51,43 +51,45 @@ internal expect fun signedMultiplyHigh(x: Long, y: Long): Long
  * at a single allocation: the result object. Compiles to `mul` + 2 `imul` + 2 `add`
  * on x86-64 and `umulh` + 2 `madd` + `mul` on ARM64.
  */
-internal fun multiply128High(aHi: Long, aLo: Long, bHi: Long, bLo: Long): Long =
+@PublishedApi internal fun multiply128High(aHi: Long, aLo: Long, bHi: Long, bLo: Long): Long =
     unsignedMultiplyHigh(aLo, bLo) + aHi * bLo + aLo * bHi
 
 /**
- * Unsigned 128-bit division with remainder.
+ * Unsigned 128-bit quotient and remainder (callers: [com.vitorpamplona.long128.UInt128.div]
+ * and [com.vitorpamplona.long128.UInt128.rem]).
  *
- * Returns `[quotientHi, quotientLo, remainderHi, remainderLo]`.
+ * Each returns its result directly, so on native the only cost beyond the division
+ * itself is a register move: no `LongArray` and no object.
  *
  * @throws ArithmeticException if the divisor is zero.
  *
- * Platform implementations:
- * - JVM: Pure-Kotlin binary long-division. O(64) when divisor fits in 64 bits
- *   (the common case for `toString`), O(128) for 128-by-128. See [unsignedDivRem]
- *   in SoftwareArithmetic.kt for the algorithm.
- * - Native: `unsigned __int128` division via `@GCUnsafeCall` → one `__udivti3` call.
+ * - JVM: pure-Kotlin binary long division ([unsignedDivRem] in SoftwareArithmetic.kt).
+ * - Native: `unsigned __int128` division via `@GCUnsafeCall` → one `__udivti3` call;
+ *   when a caller needs both quotient and remainder LLVM shares the one division.
  */
-internal expect fun unsignedDivide128(
-    dividendHi: Long, dividendLo: Long,
-    divisorHi: Long, divisorLo: Long,
-): LongArray
+internal expect fun unsignedQuotient128(
+    dividendHi: Long, dividendLo: Long, divisorHi: Long, divisorLo: Long,
+): com.vitorpamplona.long128.UInt128
+
+internal expect fun unsignedRemainder128(
+    dividendHi: Long, dividendLo: Long, divisorHi: Long, divisorLo: Long,
+): com.vitorpamplona.long128.UInt128
 
 /**
- * Signed 128-bit division with remainder (truncated toward zero).
- *
- * Returns `[quotientHi, quotientLo, remainderHi, remainderLo]`.
- * Uses truncated division semantics, matching Kotlin's built-in `/` and `%`.
+ * Signed 128-bit quotient and remainder, truncated toward zero like Kotlin's `/` and `%`.
+ * The remainder takes the sign of the dividend.
  *
  * @throws ArithmeticException if the divisor is zero.
- * @throws ArithmeticException if dividend is `MIN_VALUE` and divisor is `-1`
- *   (the result would overflow 128 bits).
+ * @throws ArithmeticException (quotient only) if the dividend is `MIN_VALUE` and the
+ *   divisor is `-1`: the result would overflow 128 bits. The remainder is then 0.
  *
- * Platform implementations:
- * - JVM: Converts operands to unsigned absolute values, delegates to
- *   [unsignedDivide128], then applies sign fixup.
+ * - JVM: unsigned division of the absolute values, then sign fix-up.
  * - Native: `__int128` division via `@GCUnsafeCall` → one `__divti3` call.
  */
-internal expect fun signedDivide128(
-    dividendHi: Long, dividendLo: Long,
-    divisorHi: Long, divisorLo: Long,
-): LongArray
+internal expect fun signedQuotient128(
+    dividendHi: Long, dividendLo: Long, divisorHi: Long, divisorLo: Long,
+): com.vitorpamplona.long128.Int128
+
+internal expect fun signedRemainder128(
+    dividendHi: Long, dividendLo: Long, divisorHi: Long, divisorLo: Long,
+): com.vitorpamplona.long128.Int128

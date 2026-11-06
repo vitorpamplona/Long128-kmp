@@ -1,5 +1,7 @@
 package com.vitorpamplona.long128.internal
 
+import com.vitorpamplona.long128.Int128
+import com.vitorpamplona.long128.UInt128
 import java.lang.invoke.MethodHandles
 import java.lang.invoke.MethodType
 
@@ -67,7 +69,7 @@ internal actual fun signedMultiplyHigh(x: Long, y: Long): Long {
     return if (mh != null) mh.invokeExact(x, y) as Long else signedMultiplyHighFallback(x, y)
 }
 
-internal actual fun unsignedMultiplyHigh(x: Long, y: Long): Long {
+@PublishedApi internal actual fun unsignedMultiplyHigh(x: Long, y: Long): Long {
     // Tier 1: direct unsigned intrinsic (JDK 18+)
     val umh = UNSIGNED_MULTIPLY_HIGH
     if (umh != null) return umh.invokeExact(x, y) as Long
@@ -83,19 +85,37 @@ internal actual fun unsignedMultiplyHigh(x: Long, y: Long): Long {
     return signed + (x and (y shr 63)) + (y and (x shr 63))
 }
 
-internal actual fun unsignedDivide128(
-    dividendHi: Long, dividendLo: Long,
-    divisorHi: Long, divisorLo: Long,
-): LongArray = unsignedDivRem(dividendHi, dividendLo, divisorHi, divisorLo)
+internal actual fun unsignedQuotient128(
+    dividendHi: Long, dividendLo: Long, divisorHi: Long, divisorLo: Long,
+): UInt128 = unsignedDivRem(dividendHi, dividendLo, divisorHi, divisorLo).let { UInt128(it[0], it[1]) }
 
-internal actual fun signedDivide128(
+internal actual fun unsignedRemainder128(
+    dividendHi: Long, dividendLo: Long, divisorHi: Long, divisorLo: Long,
+): UInt128 = unsignedDivRem(dividendHi, dividendLo, divisorHi, divisorLo).let { UInt128(it[2], it[3]) }
+
+internal actual fun signedQuotient128(
+    dividendHi: Long, dividendLo: Long, divisorHi: Long, divisorLo: Long,
+): Int128 {
+    if (dividendHi == Long.MIN_VALUE && dividendLo == 0L && divisorHi == -1L && divisorLo == -1L) {
+        throw ArithmeticException("Int128 overflow: MIN_VALUE / -1")
+    }
+    return signedDivRem128(dividendHi, dividendLo, divisorHi, divisorLo).let { Int128(it[0], it[1]) }
+}
+
+internal actual fun signedRemainder128(
+    dividendHi: Long, dividendLo: Long, divisorHi: Long, divisorLo: Long,
+): Int128 {
+    // MIN_VALUE % -1 == 0, as for Long (the quotient overflows, the remainder does not).
+    if (dividendHi == Long.MIN_VALUE && dividendLo == 0L && divisorHi == -1L && divisorLo == -1L) return Int128.ZERO
+    return signedDivRem128(dividendHi, dividendLo, divisorHi, divisorLo).let { Int128(it[2], it[3]) }
+}
+
+/** Signed division with remainder: `[qHi, qLo, rHi, rLo]`. Caller handles MIN_VALUE / -1. */
+private fun signedDivRem128(
     dividendHi: Long, dividendLo: Long,
     divisorHi: Long, divisorLo: Long,
 ): LongArray {
     if (divisorHi == 0L && divisorLo == 0L) throw ArithmeticException("Division by zero")
-    if (dividendHi == Long.MIN_VALUE && dividendLo == 0L && divisorHi == -1L && divisorLo == -1L) {
-        throw ArithmeticException("Int128 overflow: MIN_VALUE / -1")
-    }
 
     // Convert to unsigned absolute values, divide, then fix up signs.
     // Negation is two's complement: ~x + 1.

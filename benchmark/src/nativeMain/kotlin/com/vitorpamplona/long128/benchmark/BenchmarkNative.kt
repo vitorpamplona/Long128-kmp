@@ -19,6 +19,23 @@ var sink: Long = 0L
 
 fun elapsed(start: TimeSource.Monotonic.ValueTimeMark): Double = start.elapsedNow().inWholeNanoseconds.toDouble()
 
+/**
+ * Benchmarks are called through this table, not directly, so LLVM compiles each one
+ * as its own function. Called directly, they all inline into `main`, and in one
+ * function that size LLVM stops inlining the library's operators: a measurement
+ * artifact. A hot loop in user code is a function of ordinary size.
+ */
+private val benchmarks: Array<Pair<String, (Int) -> Unit>> = arrayOf(
+    "── Scalar (raw Longs: the arithmetic alone, no Int128 values) ──" to {},
+    "" to ::scalarAdd, "" to ::scalarSub, "" to ::scalarMul,
+    "" to ::scalarMulHigh, "" to ::scalarShift, "" to ::scalarCompare,
+    "── Int128 (the library API) ─────────────────────────────" to {},
+    "" to ::int128Add, "" to ::int128Sub, "" to ::int128Mul, "" to ::int128Shift,
+    "" to ::int128Compare, "div" to ::int128DivSmall, "div" to ::int128DivLarge, "" to ::int128Mixed,
+    "── Int128Array (flat LongArray storage) ─────────────────" to {},
+    "" to ::arrayAdd, "" to ::arrayMul,
+)
+
 @OptIn(ExperimentalNativeApi::class)
 fun main() {
     val N = 10_000_000
@@ -26,31 +43,13 @@ fun main() {
 
     // AOT-compiled: no JIT warmup needed.
     println("Kotlin Int128 Native benchmark ($N iterations, ${Platform.osFamily} ${Platform.cpuArchitecture})")
-    println()
-
-    println("── Scalar (raw Longs, simulates MFVC — no allocation) ──")
-    scalarAdd(N)
-    scalarSub(N)
-    scalarMul(N)
-    scalarMulHigh(N)
-    scalarShift(N)
-    scalarCompare(N)
-    println()
-
-    println("── Int128 (heap objects — what users get today) ────────")
-    int128Add(N)
-    int128Sub(N)
-    int128Mul(N)
-    int128Shift(N)
-    int128Compare(N)
-    int128DivSmall(N_DIV)
-    int128DivLarge(N_DIV)
-    int128Mixed(N)
-    println()
-
-    println("── Int128Array (flat array — no per-element allocation) ─")
-    arrayAdd(N)
-    arrayMul(N)
+    for ((label, bench) in benchmarks) {
+        when {
+            label.startsWith("──") -> { println(); println(label) }
+            label == "div" -> bench(N_DIV)
+            else -> bench(N)
+        }
+    }
     println()
     if (sink == 42L) println()  // keeps every result observable
 }

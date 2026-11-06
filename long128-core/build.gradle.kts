@@ -42,6 +42,11 @@ kotlin {
         }
     }
 
+    compilerOptions {
+        // expect class Bits128 (internal/Bits128.kt): expect/actual classes are Beta.
+        freeCompilerArgs.add("-Xexpect-actual-classes")
+    }
+
     sourceSets {
         commonTest.dependencies {
             implementation(libs.kotlin.test)

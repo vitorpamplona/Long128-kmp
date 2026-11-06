@@ -304,7 +304,12 @@ echo "--- Kotlin/Native linked binary (benchmark release executable) ---"
 # when it sits within W instructions of a multiply-high — the shape a plain cinterop
 # call has after LLVM inlines it.
 #
-# Output: mulhi mulhi_near_switch c_helper_calls bridge_calls modti3_calls
+# A 128-bit division is one call to __divti3 / __udivti3 / __modti3 / __umodti3.
+# Each word of a result is a separate C helper; if LLVM failed to merge them, the
+# calls would sit back to back, so two division calls within W instructions count
+# as a duplicated division.
+#
+# Output: mulhi mulhi_near_switch c_helper_calls bridge_calls duplicated_divisions
 kn_summary() {
     awk -v MULHI="$2" -v W=16 '
         # memory-operand xchg only: `xchg ax,ax` is a 2-byte NOP used as padding
@@ -314,7 +319,7 @@ kn_summary() {
         /^[0-9a-f]+ <.*>:$/ || /^[^ \t].*:$/ {
             name = $0; sub(/^[0-9a-f]+ </, "", name); sub(/^_/, "", name)
             inlib = index(name, "kfun:com.vitorpamplona.long128") == 1
-            n = 0; ahead = 0; next
+            n = 0; ahead = 0; lastdiv = -1000; next
         }
         inlib {
             n++; buf[n % W] = $0
@@ -326,9 +331,12 @@ kn_summary() {
             }
             if ($0 ~ /<_?(int128|uint128)_[a-z_]+>/) helper++   # call into a C helper: not inlined
             if ($0 ~ /_knbridge[0-9]+>/) bridge++                # cinterop C bridge
-            if ($0 ~ /__u?modti3/) mod++
+            if ($0 ~ /call|bl[[:space:]]/ && $0 ~ /__u?(div|mod)ti3/) {
+                if (n - lastdiv < W) dup++
+                lastdiv = n
+            }
         }
-        END { printf "%d %d %d %d %d\n", mul, near, helper, bridge, mod }
+        END { printf "%d %d %d %d %d\n", mul, near, helper, bridge, dup }
     ' "$1"
 }
 
@@ -351,8 +359,8 @@ check_kn_binary() {
         fail "$arch: cannot disassemble $bin (need llvm-objdump or an objdump for this arch)"; rm -f "$dis"; return
     fi
 
-    local mul near helper bridge mod
-    read -r mul near helper bridge mod <<< "$(kn_summary "$dis" "[[:space:]]${mulhi}[[:space:]]")"
+    local mul near helper bridge dup
+    read -r mul near helper bridge dup <<< "$(kn_summary "$dis" "[[:space:]]${mulhi}[[:space:]]")"
     rm -f "$dis"
 
     if [ "$mul" -gt 0 ]; then
@@ -370,10 +378,10 @@ check_kn_binary() {
     else
         fail "$arch: $near multiply-high sites inside a GC thread-state switch, $bridge cinterop bridge calls"
     fi
-    if [ "$mod" = 0 ]; then
-        pass "$arch: division makes one __divti3/__udivti3 call; remainder derived from quotient (no __modti3)"
+    if [ "$dup" = 0 ]; then
+        pass "$arch: each division is one __divti3/__udivti3/__modti3 call (word helpers merged by LLVM)"
     else
-        fail "$arch: $mod __modti3/__umodti3 calls (quotient and remainder computed separately)"
+        fail "$arch: $dup division calls duplicated back to back (per-word C helpers were not merged)"
     fi
 }
 

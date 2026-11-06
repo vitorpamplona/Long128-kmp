@@ -1,6 +1,8 @@
 
 package com.vitorpamplona.long128.internal
 
+import com.vitorpamplona.long128.Int128
+import com.vitorpamplona.long128.UInt128
 import kotlin.native.internal.GCUnsafeCall
 
 /**
@@ -71,37 +73,62 @@ private external fun cSRemHi(aHi: Long, aLo: Long, bHi: Long, bLo: Long): Long
 @GCUnsafeCall("int128_srem_lo")
 private external fun cSRemLo(aHi: Long, aLo: Long, bHi: Long, bLo: Long): Long
 
-internal actual fun unsignedMultiplyHigh(x: Long, y: Long): Long = cUnsignedMultiplyHigh(x, y)
+@PublishedApi internal actual fun unsignedMultiplyHigh(x: Long, y: Long): Long = cUnsignedMultiplyHigh(x, y)
 
 internal actual fun signedMultiplyHigh(x: Long, y: Long): Long = cSignedMultiplyHigh(x, y)
 
-// Four word-sized calls on the same operands: after inlining, LLVM merges them into
-// one 128-bit division and derives the remainder from the quotient.
+// Two word-sized calls per result on the same operands: after inlining, LLVM merges
+// them into one 128-bit division, and when a caller needs both the quotient and the
+// remainder it derives the remainder from the same division.
 
-internal actual fun unsignedDivide128(
-    dividendHi: Long, dividendLo: Long,
-    divisorHi: Long, divisorLo: Long,
-): LongArray {
+private fun checkDivisor(divisorHi: Long, divisorLo: Long) {
     if (divisorHi == 0L && divisorLo == 0L) throw ArithmeticException("Division by zero")
-    return longArrayOf(
+}
+
+private fun isMinByMinusOne(dividendHi: Long, dividendLo: Long, divisorHi: Long, divisorLo: Long) =
+    dividendHi == Long.MIN_VALUE && dividendLo == 0L && divisorHi == -1L && divisorLo == -1L
+
+internal actual fun unsignedQuotient128(
+    dividendHi: Long, dividendLo: Long, divisorHi: Long, divisorLo: Long,
+): UInt128 {
+    checkDivisor(divisorHi, divisorLo)
+    return UInt128(
         cUDivHi(dividendHi, dividendLo, divisorHi, divisorLo),
         cUDivLo(dividendHi, dividendLo, divisorHi, divisorLo),
+    )
+}
+
+internal actual fun unsignedRemainder128(
+    dividendHi: Long, dividendLo: Long, divisorHi: Long, divisorLo: Long,
+): UInt128 {
+    checkDivisor(divisorHi, divisorLo)
+    return UInt128(
         cURemHi(dividendHi, dividendLo, divisorHi, divisorLo),
         cURemLo(dividendHi, dividendLo, divisorHi, divisorLo),
     )
 }
 
-internal actual fun signedDivide128(
-    dividendHi: Long, dividendLo: Long,
-    divisorHi: Long, divisorLo: Long,
-): LongArray {
-    if (divisorHi == 0L && divisorLo == 0L) throw ArithmeticException("Division by zero")
-    if (dividendHi == Long.MIN_VALUE && dividendLo == 0L && divisorHi == -1L && divisorLo == -1L) {
+internal actual fun signedQuotient128(
+    dividendHi: Long, dividendLo: Long, divisorHi: Long, divisorLo: Long,
+): Int128 {
+    checkDivisor(divisorHi, divisorLo)
+    // __int128 MIN / -1 is undefined behavior in C: never hand it to the C helpers.
+    if (isMinByMinusOne(dividendHi, dividendLo, divisorHi, divisorLo)) {
         throw ArithmeticException("Int128 overflow: MIN_VALUE / -1")
     }
-    return longArrayOf(
+    return Int128(
         cSDivHi(dividendHi, dividendLo, divisorHi, divisorLo),
         cSDivLo(dividendHi, dividendLo, divisorHi, divisorLo),
+    )
+}
+
+internal actual fun signedRemainder128(
+    dividendHi: Long, dividendLo: Long, divisorHi: Long, divisorLo: Long,
+): Int128 {
+    checkDivisor(divisorHi, divisorLo)
+    // MIN_VALUE % -1 == 0, as for Long. (In C it is undefined behavior.)
+    if (isMinByMinusOne(dividendHi, dividendLo, divisorHi, divisorLo)) return Int128.ZERO
+    return Int128(
         cSRemHi(dividendHi, dividendLo, divisorHi, divisorLo),
         cSRemLo(dividendHi, dividendLo, divisorHi, divisorLo),
     )

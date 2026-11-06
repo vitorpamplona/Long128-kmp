@@ -30,6 +30,20 @@ compilerOpts.ios_arm64 = -mcpu=apple-a7
  * Single int64_t return values use the standard return register (RAX/x0).
  */
 
+/* ── 128-bit register value (Kotlin's Vector128) ──────────────────
+ * Int128/UInt128 are value classes over Kotlin/Native's Vector128, a 16-byte
+ * value type that lives in a SIMD register. Kotlin can only build one from four
+ * ints; this builds it from two 64-bit words. Lane 0 = low word, lane 1 = high
+ * word. The return type matches Vector128's LLVM type (<4 x i32>) exactly. */
+
+typedef int32_t int128_v4si __attribute__((vector_size(16)));
+typedef int64_t int128_v2di __attribute__((vector_size(16)));
+
+int128_v4si int128_bits(int64_t hi, int64_t lo) {
+    int128_v2di v = { lo, hi };
+    return (int128_v4si)v;
+}
+
 /* ── Multiply-high (single int64_t return, ABI-portable) ──────── */
 
 /* Signed: high 64 bits of (signed64 × signed64) */
