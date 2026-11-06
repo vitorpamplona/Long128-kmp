@@ -469,4 +469,24 @@ class Int128Test {
         assertEquals(1, Int128.ONE.sign)
         assertEquals(1, Int128.MAX_VALUE.sign)
     }
+
+    @Test fun minValueRemNegativeOneIsZero() {
+        // Same as Long: the quotient overflows (and throws here), the remainder is exactly 0.
+        assertEquals(Int128.ZERO, Int128.MIN_VALUE % Int128.NEGATIVE_ONE)
+        assertFailsWith<ArithmeticException> { Int128.MIN_VALUE / Int128.NEGATIVE_ONE }
+        assertFailsWith<ArithmeticException> { Int128.MIN_VALUE % Int128.ZERO }
+    }
+
+    @Test fun valueClassEqualityAndHashing() {
+        // Int128 is a value class: equality and hashing are structural on every platform.
+        val a = Int128(0x1234L, -5L)
+        val b = Int128(0x1234L, -5L)
+        assertEquals(a, b)
+        assertEquals(a.hashCode(), b.hashCode())
+        assertEquals(1, setOf(a, b, Int128(0x1234L, -5L)).size)
+        assertEquals(2, setOf(a, Int128(0x1234L, -4L)).size)
+        val boxed: Any = a
+        assertEquals<Any>(b, boxed)
+        assertEquals(listOf(Int128.MIN_VALUE, Int128.ZERO, Int128.MAX_VALUE), listOf(Int128.MAX_VALUE, Int128.MIN_VALUE, Int128.ZERO).sorted())
+    }
 }

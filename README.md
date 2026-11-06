@@ -251,13 +251,13 @@ val small = int128ArrayOf(listOf(a, b, c))          // Kotlin forbids `vararg` o
 Every claim in this README is machine-verified:
 
 ```bash
-./gradlew :long128-core:jvmTest   # 281 tests (248 on linuxX64Test)
+./gradlew :long128-core:jvmTest   # 283 tests (250 on linuxX64Test)
 ./verify-instructions.sh           # 27 instruction checks with both Linux benchmark binaries built
 ```
 
 | What | How | Result |
 |------|-----|--------|
-| Arithmetic correctness | BigInteger oracle (java.math + ionspin/bignum), 500+ value pairs per op, all platforms | 281 JVM / 248 native tests pass |
+| Arithmetic correctness | BigInteger oracle (java.math + ionspin/bignum), 500+ value pairs per op, all platforms | 283 JVM / 250 native tests pass |
 | `Math.multiplyHigh` used | Bytecode inspection of compiled `.class` | Constant pool contains MethodHandle + `multiplyHigh` |
 | No boxing | Bytecode inspection | No `Long.valueOf` in Int128.class |
 | No BigInteger dependency | Bytecode + class file scan | Zero references |
