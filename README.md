@@ -86,8 +86,20 @@ All numbers: same machine (4-core Xeon @ 2.1 GHz, Linux x86-64), Kotlin 2.4.21, 
 - **JVM, `Int128`/`UInt128` values carried around a loop: allocation.** On the JVM an `Int128` is one 16-byte object. HotSpot's escape analysis removes it in straight-line code and in loops that do not carry it (the array multiply allocates nothing and runs at 1.3x C), but not when a value flows through a loop's back edge: then every iteration allocates. Only Kotlin multi-field value classes / Valhalla can fix that for an immutable type.
 - **The fix you can use today: a mutable accumulator.** `MutableUInt128` / `MutableInt128` are allocated once, before the loop, and updated in place (`acc *= a; acc += b`, `acc /= d`, `acc.multiplyAdd(a, b)`). Escape analysis turns a non-escaping one into two `long` registers, and Kotlin/Native keeps it in registers too, so loops run at C speed with zero allocation (JMH: 0 B/op for every mutable benchmark).
 - **Division on the JVM** is Knuth's algorithm D on `Long.divideUnsigned` (one hardware `div` from JDK 19). x86 can divide 128 by 64 bits in one instruction, which Java cannot reach, so a 128/64 step costs two 64-bit divisions: that is the remaining 2.3x on division by a large divisor.
-- **Native `Int128` in a loop-carried chain:** the value lives in an SSE register between iterations; each iteration moves it to general registers and back. LLVM 21 (Kotlin/Native 2.4) makes this worse than LLVM 16 did for add and multiply chains (it does the low-word add as a SIMD `paddq`, then moves the result out for the carry): `Int128` add went from 1.42 to 2.94 ns and multiply-add from 4.32 to 6.30 ns, while shift, compare and array loops got 12-35% faster. Doing the whole operation in C on `__int128` instead was measured too, and is slower still.
-- **Native mutable accumulators** stay at or under C for multiply-add, mixed and division. A loop that only adds (1.24 ns vs C's 0.53) pays a memory round trip: Kotlin/Native 2.4 still places the non-escaping accumulator on the stack, but records its address in the GC root frame, so LLVM keeps its two fields in memory instead of registers. Kotlin/Native 2.1 kept them in registers (0.35 ns).
+- **Native `Int128` in a loop-carried chain:** the value lives in an SSE register between iterations; each iteration moves it to general registers and back. Upgrading from Kotlin 2.1.20 to 2.4.21 made add and multiply chains slower (`Int128` add 1.42 → 2.94 ns, multiply-add 4.32 → 6.30 ns) and shifts, compares and array loops 12-35% faster. Doing the whole operation in C on `__int128` instead was measured too, and is slower still.
+- **Native mutable accumulators** stay at or under C for multiply-add, mixed and division. A loop that only adds is 1.24 ns (C: 0.53; Kotlin 2.1.20: 0.35).
+
+**Which part of the Kotlin upgrade caused what.** Kotlin/Native 2.1 and 2.4 emit the same IR for these operators; the differences come later. Saving each version's IR before code generation (`-Xsave-llvm-ir-after`) and compiling it with each LLVM's backend separates the two (ns/op, same machine):
+
+| Native loop | 2.1 IR, LLVM 16 backend | 2.1 IR, LLVM 21 backend | 2.4 IR, LLVM 21 backend |
+|---|---|---|---|
+| mutable add | 0.33 | **1.27** | 1.28 |
+| `Int128` add | 1.38 | 1.60 | **2.94** |
+| `Int128` multiply-add | 4.21 | 4.29 | **6.28** |
+| `Int128` shift | 3.27 | **2.22** | 2.22 |
+
+- *LLVM 21's x86 code generator* is responsible for the mutable add (it computes the carry with `setb` and folds the high-word load into `adc [mem]`, instead of `mov` + `adc reg, 0`) and for the faster shifts.
+- *Kotlin/Native 2.4's IR optimization pipeline* is responsible for the `Int128` add and multiply regressions: its optimized IR does the low-word add as a SIMD `add <2 x i64>` (`paddq`) and moves values between register files. Plain `clang -O3` (LLVM 21) on the same input IR does not do this, which points at how Kotlin/Native configures the pipeline rather than LLVM 21 itself.
 
 ### Kotlin/Native: `Int128` is a register value
 
