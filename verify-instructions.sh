@@ -333,7 +333,8 @@ kn_summary() {
 }
 
 check_kn_binary() {
-    local arch=$1 bin=$2 mulhi=$3 dis
+    # mulhi is an ERE for the multiply-high mnemonic; insn is how messages print it
+    local arch=$1 bin=$2 mulhi=$3 insn=$4 dis
     dis=$(mktemp)
     # GNU objdump handles the host arch; llvm-objdump (macOS ships it as `objdump`) handles both.
     if [ "$arch" = "x86-64" ] && objdump -d --no-show-raw-insn -M intel "$bin" > "$dis" 2>/dev/null && [ -s "$dis" ]; then
@@ -342,6 +343,10 @@ check_kn_binary() {
         :
     elif objdump -d --no-show-raw-insn "$bin" > "$dis" 2>/dev/null && grep -qE "[[:space:]]${mulhi}[[:space:]]" "$dis"; then
         :
+    elif [ "$arch" = "ARM64" ] && arm_objdump=$(ls "$HOME"/.konan/dependencies/aarch64-unknown-linux-gnu-*/bin/aarch64-unknown-linux-gnu-objdump \
+            "$(command -v aarch64-linux-gnu-objdump 2>/dev/null)" 2>/dev/null | head -1) && [ -n "$arm_objdump" ] \
+            && "$arm_objdump" -d --no-show-raw-insn "$bin" > "$dis" 2>/dev/null && [ -s "$dis" ]; then
+        :   # the aarch64 binutils Kotlin/Native downloads to cross-link linuxArm64
     else
         fail "$arch: cannot disassemble $bin (need llvm-objdump or an objdump for this arch)"; rm -f "$dis"; return
     fi
@@ -351,9 +356,9 @@ check_kn_binary() {
     rm -f "$dis"
 
     if [ "$mul" -gt 0 ]; then
-        pass "$arch: multiply-high is an inline '$mulhi' in Kotlin code ($mul sites, incl. Int128.times and the benchmark loops)"
+        pass "$arch: multiply-high is an inline '$insn' in Kotlin code ($mul sites, incl. Int128.times and the benchmark loops)"
     else
-        fail "$arch: no inline '$mulhi' in Kotlin code"
+        fail "$arch: no inline '$insn' in Kotlin code"
     fi
     if [ "$helper" = 0 ]; then
         pass "$arch: Kotlin code never calls the C helpers — LLVM inlined every @GCUnsafeCall body"
@@ -373,15 +378,16 @@ check_kn_binary() {
 }
 
 KN_FOUND=0
+# x86-64 multiply-high is `mul` in Intel syntax, `mulq` in AT&T (llvm-objdump's default).
 for spec in \
-    "x86-64:linuxX64:mul" "ARM64:linuxArm64:umulh" \
-    "x86-64:macosX64:mul" "ARM64:macosArm64:umulh"
+    "x86-64:linuxX64:mulq?:mul" "ARM64:linuxArm64:umulh:umulh" \
+    "x86-64:macosX64:mulq?:mul" "ARM64:macosArm64:umulh:umulh"
 do
-    IFS=: read -r arch target mulhi <<< "$spec"
+    IFS=: read -r arch target mulhi insn <<< "$spec"
     bin="benchmark/build/bin/$target/releaseExecutable/benchmark.kexe"
     if [ -f "$bin" ]; then
         echo "  [$target] $bin"
-        check_kn_binary "$arch" "$bin" "$mulhi"
+        check_kn_binary "$arch" "$bin" "$mulhi" "$insn"
         KN_FOUND=1
     fi
 done
