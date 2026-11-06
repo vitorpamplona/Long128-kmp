@@ -345,7 +345,7 @@ Requires JDK 17 or newer. CI runs the JVM test suite against JDK 17 and 21.
 | JVM division by a 128-bit divisor is ~2.3x C | x86's 128/64 `div` is unreachable from Java; Knuth D needs two 64-bit divisions | Division by a 64-bit divisor matches C |
 | Android API <31: no hardware multiply | `Math.multiplyHigh` absent | Karatsuba fallback (3-8x faster than BigInteger) |
 | Android: no `unsignedMultiplyHigh` | Never added to Android SDK | Signed + 3-insn correction |
-| Native: 1.4-5.5x C in loop-carried `Int128` chains | The carried value lives in an SSE register and moves to general registers every iteration; LLVM 21 does this worse than LLVM 16 for add/multiply | `MutableInt128`/`MutableUInt128` accumulators: at or under C for multiply, mixed and division (an add-only loop is 2.3x) |
+| Native: 1.4-5.5x C in loop-carried `Int128` chains | The carried value lives in an SSE register and moves to general registers every iteration; Kotlin/Native 2.4's IR pipeline makes add/multiply worse than 2.1 did (see "Which part of the Kotlin upgrade caused what") | `MutableInt128`/`MutableUInt128` accumulators: at or under C for multiply, mixed and division (an add-only loop is 2.3x) |
 | Native relies on `GCUnsafeCall` | Kotlin/Native internal API; no public intrinsic yet ([KT-85635](https://youtrack.jetbrains.com/issue/KT-85635)) | CI builds and checks the linked binary |
 | Apple targets not run in CI | The macOS CI jobs are currently cancelled before they start | Run `./gradlew :long128-core:macosArm64Test` on a Mac |
 | Android performance not measured | JMH measures desktop HotSpot; ART's JIT and escape analysis differ | The mutable accumulators avoid per-iteration allocation by construction, with or without escape analysis |
